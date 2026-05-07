@@ -1,0 +1,191 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SourceSystem {
+  WORDPRESS
+  META
+  GHL
+  ZENOTI
+}
+
+enum MatchStatus {
+  MATCHED
+  POSSIBLE_MATCH
+  UNMATCHED
+  DUPLICATE
+  NEEDS_REVIEW
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum ReconciliationStatus {
+  HEALTHY
+  MINOR_DISCREPANCY
+  MAJOR_DISCREPANCY
+  MISSING_GHL
+  MISSING_ZENOTI
+  DUPLICATE_ISSUE
+  NEEDS_REVIEW
+}
+
+model LeadSourceRecord {
+  id                     String       @id @default(cuid())
+  sourceSystem           SourceSystem
+  externalId             String?
+  createdAtSource        DateTime?
+  importedAt             DateTime     @default(now())
+
+  firstName              String?
+  lastName               String?
+  fullName               String?
+  email                  String?
+  phone                  String?
+  normalizedEmail        String?
+  normalizedPhone        String?
+
+  clinicLocationRaw      String?
+  clinicLocationNormalized String?
+  serviceRaw             String?
+  serviceNormalized      String?
+
+  campaignName           String?
+  adSetName              String?
+  adName                 String?
+  formName               String?
+  formId                 String?
+  leadSource             String?
+
+  pageUrl                String?
+  landingPageUrl         String?
+  referrerUrl            String?
+  utmSource              String?
+  utmMedium              String?
+  utmCampaign            String?
+  utmContent             String?
+  utmTerm                String?
+  wordpressSubmissionId  String?
+  wordpressFormPlugin    String?
+
+  ghlContactId           String?
+  ghlOpportunityId       String?
+  zenotiGuestId          String?
+  zenotiAppointmentId    String?
+
+  status                 String?
+  isDuplicate            Boolean      @default(false)
+  duplicateOfId          String?
+
+  rawPayload             Json?
+  importBatchId          String?
+
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  importBatch            ImportBatch? @relation(fields: [importBatchId], references: [id])
+  primaryMatches         LeadMatch[]  @relation("PrimaryLead")
+  matchedMatches         LeadMatch[]  @relation("MatchedLead")
+
+  @@index([sourceSystem])
+  @@index([normalizedPhone])
+  @@index([normalizedEmail])
+  @@index([clinicLocationNormalized])
+  @@index([serviceNormalized])
+  @@index([createdAtSource])
+  @@index([importBatchId])
+}
+
+model LeadMatch {
+  id             String      @id @default(cuid())
+  primaryLeadId  String
+  matchedLeadId  String
+  matchScore     Int         @default(0)
+  matchStatus    MatchStatus @default(UNMATCHED)
+  matchReasons   Json?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  primaryLead    LeadSourceRecord @relation("PrimaryLead", fields: [primaryLeadId], references: [id])
+  matchedLead    LeadSourceRecord @relation("MatchedLead", fields: [matchedLeadId], references: [id])
+
+  @@unique([primaryLeadId, matchedLeadId])
+  @@index([primaryLeadId])
+  @@index([matchedLeadId])
+  @@index([matchStatus])
+}
+
+model WordPressFormSummary {
+  id                            String               @id @default(cuid())
+  formName                      String
+  formId                        String?
+  wordpressFormPlugin           String?
+  pageUrl                       String?
+  totalSubmissions              Int                  @default(0)
+  uniqueLeads                   Int                  @default(0)
+  duplicateSubmissions          Int                  @default(0)
+  ghlMatchedCount               Int                  @default(0)
+  zenotiMatchedCount            Int                  @default(0)
+  missingInGhlCount             Int                  @default(0)
+  missingInZenotiCount          Int                  @default(0)
+  formToGhlReconciliationRate   Float                @default(0)
+  formToZenotiReconciliationRate Float               @default(0)
+  reconciliationStatus          ReconciliationStatus @default(NEEDS_REVIEW)
+  lastSubmissionAt              DateTime?
+  createdAt                     DateTime             @default(now())
+  updatedAt                     DateTime             @updatedAt
+
+  @@index([formName])
+}
+
+model ClinicMapping {
+  id              String   @id @default(cuid())
+  rawValue        String   @unique
+  normalizedValue String
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ServiceMapping {
+  id              String   @id @default(cuid())
+  rawValue        String   @unique
+  normalizedValue String
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model SourceMapping {
+  id              String   @id @default(cuid())
+  rawValue        String   @unique
+  normalizedValue String
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ImportBatch {
+  id           String       @id @default(cuid())
+  sourceSystem SourceSystem
+  fileName     String
+  uploadedBy   String?
+  totalRows    Int          @default(0)
+  validRows    Int          @default(0)
+  invalidRows  Int          @default(0)
+  duplicateRows Int         @default(0)
+  status       ImportStatus @default(PENDING)
+  errorSummary Json?
+  createdAt    DateTime     @default(now())
+
+  leads        LeadSourceRecord[]
+}

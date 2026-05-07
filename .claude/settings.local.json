@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --no-git --yes)",
+      "Read(//Users/fetadlas/.npm/_cacache/**)",
+      "Bash(npx --version)",
+      "Read(//usr/local/lib/node_modules/**)",
+      "Read(//Users/fetadlas/.nvm/versions/**)",
+      "Bash(curl -s --max-time 10 https://registry.npmjs.org/next/latest)",
+      "Bash(ping -c 2 registry.npmjs.org)"
+    ]
+  }
+}
