@@ -1,73 +1,117 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseWordPressCSV, parseMetaCSV, parseGHLCSV, parseZenotiCSV } from "@/lib/csv-parser";
+import { parseCSV, type ParsedSourceSystem } from "@/lib/csv-parser";
 import prisma from "@/lib/prisma";
-import type { SourceSystem } from "@/types";
 
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
-  const source = formData.get("source") as SourceSystem | null;
+  const source = formData.get("source") as ParsedSourceSystem | null;
 
   if (!file || !source) {
     return NextResponse.json({ error: "Missing file or source" }, { status: 400 });
   }
 
-  const text = await file.text();
-  let parsed;
-  switch (source) {
-    case "WORDPRESS": parsed = parseWordPressCSV(text); break;
-    case "META": parsed = parseMetaCSV(text); break;
-    case "GHL": parsed = parseGHLCSV(text); break;
-    case "ZENOTI": parsed = parseZenotiCSV(text); break;
-    default: return NextResponse.json({ error: "Unknown source" }, { status: 400 });
+  const validSources: ParsedSourceSystem[] = ["WEBSITE", "META", "GHL", "ZENOTI"];
+  if (!validSources.includes(source)) {
+    return NextResponse.json({ error: "Unknown source system" }, { status: 400 });
   }
 
-  const valid = parsed.filter((r) => r.errors.length === 0);
-  const invalid = parsed.filter((r) => r.errors.length > 0);
-  const errors = invalid.flatMap((r) => r.errors).slice(0, 20);
+  const text = await file.text();
+  const { records, invalidRows: parseInvalidRows, errors: parseErrors } = parseCSV(text, source);
+
+  const validRecords = records.filter((r) => !r._dateInvalid);
+  const invalidCount = parseInvalidRows + records.filter((r) => r._dateInvalid).length;
+
+  let unmappedClinicRows = 0;
+  let unmappedServiceRows = 0;
+  let unmappedFormSourceRows = 0;
+  let minDate: Date | undefined;
+  let maxDate: Date | undefined;
+
+  for (const r of validRecords) {
+    if (r._unmappedClinic) unmappedClinicRows++;
+    if (r._unmappedService) unmappedServiceRows++;
+    if (r._unmappedFormSource) unmappedFormSourceRows++;
+    const d = r.reportDate ?? r.createdAtSource;
+    if (d) {
+      if (!minDate || d < minDate) minDate = d;
+      if (!maxDate || d > maxDate) maxDate = d;
+    }
+  }
+
+  const errors = parseErrors.slice(0, 30);
 
   const batch = await prisma.importBatch.create({
     data: {
       sourceSystem: source,
       fileName: file.name,
-      totalRows: parsed.length,
-      validRows: valid.length,
-      invalidRows: invalid.length,
+      totalRows: records.length + parseInvalidRows,
+      validRows: validRecords.length,
+      invalidRows: invalidCount,
+      unmappedClinicRows,
+      unmappedServiceRows,
+      unmappedFormSourceRows,
+      importedDateRangeStart: minDate,
+      importedDateRangeEnd: maxDate,
       status: "PROCESSING",
       errorSummary: errors.length > 0 ? { errors } : undefined,
     },
   });
 
   let duplicateRows = 0;
-  for (const lead of valid) {
-    // Check duplicate by phone+source or email+source
-    const existing = lead.normalizedPhone
-      ? await prisma.leadSourceRecord.findFirst({
-          where: { sourceSystem: source, normalizedPhone: lead.normalizedPhone },
-        })
-      : null;
+  const toCreate: any[] = [];
 
-    if (existing) {
-      duplicateRows++;
-      continue;
+  for (const record of validRecords) {
+    // Skip-duplicate logic for aggregate Meta rows: use externalId uniqueness
+    if (source === "META" && record.externalId) {
+      const exists = await prisma.leadSourceRecord.findFirst({
+        where: { sourceSystem: "META", externalId: record.externalId },
+        select: { id: true },
+      });
+      if (exists) { duplicateRows++; continue; }
     }
 
-    await prisma.leadSourceRecord.create({
-      data: { ...lead, sourceSystem: source, importBatchId: batch.id, rawPayload: lead.rawPayload ?? undefined } as any,
-    });
+    // For individual leads: phone/email+source dedup
+    if (source !== "META" && record.externalId) {
+      const exists = await prisma.leadSourceRecord.findFirst({
+        where: { sourceSystem: source, externalId: record.externalId },
+        select: { id: true },
+      });
+      if (exists) { duplicateRows++; continue; }
+    }
+
+    const { _unmappedClinic, _unmappedService, _unmappedFormSource, _dateInvalid, ...rest } = record;
+    toCreate.push({ ...rest, sourceSystem: source, importBatchId: batch.id });
+  }
+
+  if (toCreate.length > 0) {
+    await prisma.leadSourceRecord.createMany({ data: toCreate as any, skipDuplicates: true });
   }
 
   await prisma.importBatch.update({
     where: { id: batch.id },
-    data: { duplicateRows, status: "COMPLETED" },
+    data: { duplicateRows, validRows: toCreate.length, status: "COMPLETED" },
   });
 
   return NextResponse.json({
     batchId: batch.id,
-    totalRows: parsed.length,
-    validRows: valid.length,
-    invalidRows: invalid.length,
+    totalRows: records.length + parseInvalidRows,
+    validRows: toCreate.length,
+    invalidRows: invalidCount,
     duplicateRows,
+    unmappedClinicRows,
+    unmappedServiceRows,
+    unmappedFormSourceRows,
+    importedDateRangeStart: minDate?.toISOString().slice(0, 10) ?? null,
+    importedDateRangeEnd: maxDate?.toISOString().slice(0, 10) ?? null,
     errors,
   });
+}
+
+export async function GET() {
+  const history = await prisma.importBatch.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+  return NextResponse.json(history);
 }

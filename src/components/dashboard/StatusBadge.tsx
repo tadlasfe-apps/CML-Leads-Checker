@@ -1,40 +1,52 @@
+"use client";
 import { Badge } from "@/components/ui/badge";
-import type { ReconciliationStatus, MatchStatus } from "@/types";
+import type { AuditStatus, DiscrepancyLocation } from "@/types";
 
-const reconciliationConfig: Record<ReconciliationStatus, { label: string; variant: "success" | "warning" | "destructive" | "info" | "purple" | "outline" }> = {
-  HEALTHY: { label: "Healthy", variant: "success" },
-  MINOR_DISCREPANCY: { label: "Minor Discrepancy", variant: "warning" },
-  MAJOR_DISCREPANCY: { label: "Major Discrepancy", variant: "destructive" },
-  MISSING_GHL: { label: "Missing in GHL", variant: "destructive" },
-  MISSING_ZENOTI: { label: "Missing in Zenoti", variant: "warning" },
-  DUPLICATE_ISSUE: { label: "Duplicate Issue", variant: "purple" },
-  NEEDS_REVIEW: { label: "Needs Review", variant: "info" },
+type BadgeVariant = "success" | "warning" | "destructive" | "info" | "purple" | "outline";
+
+const auditConfig: Record<AuditStatus, { label: string; variant: BadgeVariant }> = {
+  MATCHED:            { label: "Matched",              variant: "success" },
+  MINOR_MISMATCH:     { label: "Minor Mismatch",       variant: "warning" },
+  MAJOR_MISMATCH:     { label: "Major Mismatch",       variant: "destructive" },
+  MISSING_IN_GHL:     { label: "Missing in GHL",       variant: "destructive" },
+  EXTRA_IN_GHL:       { label: "Extra in GHL",         variant: "warning" },
+  MISSING_IN_ZENOTI:  { label: "Missing in Zenoti",    variant: "warning" },
+  EXTRA_IN_ZENOTI:    { label: "Extra in Zenoti",      variant: "info" },
+  NEEDS_MAPPING:      { label: "Needs Mapping",        variant: "info" },
+  NEEDS_REVIEW:       { label: "Needs Review",         variant: "purple" },
 };
 
-const matchConfig: Record<MatchStatus, { label: string; variant: "success" | "warning" | "destructive" | "info" | "purple" | "outline" }> = {
-  MATCHED: { label: "Matched", variant: "success" },
-  POSSIBLE_MATCH: { label: "Possible Match", variant: "warning" },
-  UNMATCHED: { label: "Unmatched", variant: "destructive" },
-  DUPLICATE: { label: "Duplicate", variant: "purple" },
-  NEEDS_REVIEW: { label: "Needs Review", variant: "info" },
+const discrepancyConfig: Record<DiscrepancyLocation, { label: string; variant: BadgeVariant }> = {
+  NONE:           { label: "No Discrepancy",       variant: "success" },
+  SOURCE_TO_GHL:  { label: "Source → GHL Gap",     variant: "warning" },
+  GHL_TO_ZENOTI:  { label: "GHL → Zenoti Gap",     variant: "warning" },
+  BOTH:           { label: "Both Gaps",             variant: "destructive" },
+  NEEDS_MAPPING:  { label: "Needs Mapping",         variant: "info" },
+  NEEDS_REVIEW:   { label: "Needs Review",          variant: "purple" },
 };
 
-export function ReconciliationBadge({ status }: { status: ReconciliationStatus }) {
-  const config = reconciliationConfig[status] ?? { label: status, variant: "outline" as const };
+export function AuditStatusBadge({ status }: { status: AuditStatus | string }) {
+  const config = auditConfig[status as AuditStatus] ?? { label: status, variant: "outline" as BadgeVariant };
   return <Badge variant={config.variant}>{config.label}</Badge>;
 }
 
-export function MatchStatusBadge({ status }: { status: MatchStatus }) {
-  const config = matchConfig[status] ?? { label: status, variant: "outline" as const };
+export function DiscrepancyBadge({ location }: { location: DiscrepancyLocation | string }) {
+  const config = discrepancyConfig[location as DiscrepancyLocation] ?? { label: location, variant: "outline" as BadgeVariant };
   return <Badge variant={config.variant}>{config.label}</Badge>;
 }
 
 export function SourceBadge({ source }: { source: string }) {
-  const variantMap: Record<string, "info" | "purple" | "success" | "warning"> = {
-    WORDPRESS: "info",
+  const variantMap: Record<string, BadgeVariant> = {
+    WEBSITE: "info",
     META: "purple",
     GHL: "success",
     ZENOTI: "warning",
   };
-  return <Badge variant={variantMap[source] ?? "outline"}>{source}</Badge>;
+  const labelMap: Record<string, string> = {
+    WEBSITE: "Website",
+    META: "Meta",
+    GHL: "GHL",
+    ZENOTI: "Zenoti",
+  };
+  return <Badge variant={variantMap[source] ?? "outline"}>{labelMap[source] ?? source}</Badge>;
 }

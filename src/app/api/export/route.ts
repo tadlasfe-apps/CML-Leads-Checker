@@ -28,58 +28,62 @@ export async function GET(req: NextRequest) {
   let rows: Record<string, unknown>[] = [];
   let filename = "export.csv";
 
-  if (type === "unmatched") {
-    filename = "unmatched-leads.csv";
-    const leads = await prisma.leadSourceRecord.findMany({
-      where: { ...where, sourceSystem: { in: ["WORDPRESS", "META"] } },
-      include: { primaryMatches: { take: 1, orderBy: { matchScore: "desc" } } },
-      take: 5000,
-    });
-    rows = leads.filter((l) => !l.primaryMatches.some((m) => m.matchStatus === "MATCHED"))
-      .map((l) => ({
-        id: l.id, source: l.sourceSystem, date: l.createdAtSource?.toISOString().slice(0, 10),
-        name: l.fullName, email: l.email, phone: l.phone,
-        clinic: l.clinicLocationNormalized, service: l.serviceNormalized,
-        formName: l.formName, campaign: l.campaignName,
-      }));
-  } else if (type === "duplicates") {
+  if (type === "duplicates") {
     filename = "duplicate-leads.csv";
     const leads = await prisma.leadSourceRecord.findMany({
       where: { ...where, isDuplicate: true },
       take: 5000,
     });
     rows = leads.map((l) => ({
-      id: l.id, source: l.sourceSystem, date: l.createdAtSource?.toISOString().slice(0, 10),
-      name: l.fullName, email: l.email, phone: l.phone,
-      clinic: l.clinicLocationNormalized, service: l.serviceNormalized,
+      id: l.id,
+      source: l.sourceSystem,
+      date: l.createdAtSource?.toISOString().slice(0, 10),
+      name: l.fullName,
+      email: l.email,
+      phone: l.phone,
+      clinic: l.clinicLocationNormalized,
+      service: l.serviceNormalized,
+      formName: l.formName,
+      websiteFormSource: l.websiteFormSource,
     }));
-  } else if (type === "missing-ghl") {
-    filename = "missing-in-ghl.csv";
-    const sourceleads = await prisma.leadSourceRecord.findMany({
-      where: { ...where, sourceSystem: { in: ["WORDPRESS", "META"] } },
-      include: { primaryMatches: { take: 1 } },
-      take: 5000,
+  } else if (type === "website-leads") {
+    filename = "website-leads.csv";
+    const leads = await prisma.leadSourceRecord.findMany({
+      where: { ...where, sourceSystem: "WEBSITE" },
+      take: 10000,
+      orderBy: { createdAtSource: "desc" },
     });
-    rows = sourceleads.filter((l) => l.primaryMatches.length === 0 || l.primaryMatches[0].matchStatus === "UNMATCHED")
-      .map((l) => ({
-        source: l.sourceSystem, date: l.createdAtSource?.toISOString().slice(0, 10),
-        name: l.fullName, email: l.email, phone: l.phone,
-        clinic: l.clinicLocationNormalized, service: l.serviceNormalized,
-        form: l.formName,
-      }));
-  } else if (type === "wordpress-forms") {
-    filename = "wordpress-forms.csv";
-    const forms = await prisma.wordPressFormSummary.findMany({ orderBy: { totalSubmissions: "desc" } });
-    rows = forms.map((f) => ({
-      formName: f.formName, plugin: f.wordpressFormPlugin, pageUrl: f.pageUrl,
-      totalSubmissions: f.totalSubmissions, uniqueLeads: f.uniqueLeads,
-      duplicates: f.duplicateSubmissions, ghlMatched: f.ghlMatchedCount,
-      zenotiMatched: f.zenotiMatchedCount, missingGhl: f.missingInGhlCount,
-      missingZenoti: f.missingInZenotiCount,
-      ghlRate: f.formToGhlReconciliationRate.toFixed(1) + "%",
-      zenotiRate: f.formToZenotiReconciliationRate.toFixed(1) + "%",
-      status: f.reconciliationStatus,
-      lastSubmission: f.lastSubmissionAt?.toISOString().slice(0, 10),
+    rows = leads.map((l) => ({
+      id: l.id,
+      date: l.createdAtSource?.toISOString().slice(0, 10),
+      name: l.fullName,
+      email: l.email,
+      phone: l.phone,
+      clinic: l.clinicLocationNormalized,
+      service: l.serviceNormalized,
+      formName: l.formName,
+      websiteFormSource: l.websiteFormSource,
+      isDuplicate: l.isDuplicate,
+      backendProvider: l.backendProvider,
+      pageUrl: l.pageUrl,
+    }));
+  } else if (type === "meta-leads") {
+    filename = "meta-leads.csv";
+    const leads = await prisma.leadSourceRecord.findMany({
+      where: { ...(dateFilter ? { reportDate: dateFilter } : {}), sourceSystem: "META" },
+      take: 10000,
+      orderBy: { reportDate: "desc" },
+    });
+    rows = leads.map((l) => ({
+      date: l.reportDate?.toISOString().slice(0, 10),
+      campaign: l.campaignName,
+      adSet: l.metaAdSetName,
+      ad: l.metaAdName,
+      resultType: l.metaResultType,
+      leads: l.metaLeadCount,
+      spend: l.spend,
+      costPerResult: l.costPerResult,
+      impressions: l.impressions,
     }));
   } else {
     filename = "source-comparison.csv";
@@ -90,14 +94,20 @@ export async function GET(req: NextRequest) {
     });
     const map = new Map<string, Record<string, number>>();
     for (const g of groups) {
-      const key = `${g.clinicLocationNormalized}::${g.serviceNormalized}`;
+      const key = `${g.clinicLocationNormalized ?? "Unknown"}::${g.serviceNormalized ?? "Other"}`;
       if (!map.has(key)) map.set(key, {});
       map.get(key)![g.sourceSystem] = g._count.id;
     }
     rows = Array.from(map.entries()).map(([key, bySrc]) => {
       const [clinic, service] = key.split("::");
-      return { clinic, service, wordpress: bySrc["WORDPRESS"] || 0, meta: bySrc["META"] || 0,
-        ghl: bySrc["GHL"] || 0, zenoti: bySrc["ZENOTI"] || 0 };
+      return {
+        clinic,
+        service,
+        website: bySrc["WEBSITE"] || 0,
+        meta: bySrc["META"] || 0,
+        ghl: bySrc["GHL"] || 0,
+        zenoti: bySrc["ZENOTI"] || 0,
+      };
     });
   }
 

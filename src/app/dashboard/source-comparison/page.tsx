@@ -1,41 +1,94 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { TopBar } from "@/components/layout/TopBar";
 import { DateRangeFilter, getDateRangeFromPreset } from "@/components/dashboard/DateRangeFilter";
 import { ExportButton } from "@/components/dashboard/ExportButton";
-import { ReconciliationBadge } from "@/components/dashboard/StatusBadge";
+import { AuditStatusBadge, DiscrepancyBadge } from "@/components/dashboard/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { format, subDays } from "date-fns";
-import { Search, ArrowUpDown } from "lucide-react";
-import type { ReconciliationStatus } from "@/types";
+import { format } from "date-fns";
+import { ArrowUpDown, ChevronDown, ChevronRight } from "lucide-react";
+import type { SourceComparisonRow, DateGrouping, ReportingTimezone } from "@/types";
+import { DATE_GROUPINGS, REPORTING_TIMEZONES } from "@/types";
+import { getDateRangeFromPreset as gdr } from "@/components/dashboard/DateRangeFilter";
+
+function DiffCell({ val }: { val: number }) {
+  if (val === 0) return <span className="text-green-600 font-medium">0</span>;
+  return <span className={`font-semibold ${val > 0 ? "text-red-600" : "text-emerald-600"}`}>{val > 0 ? `+${val}` : val}</span>;
+}
+
+function RateCell({ rate }: { rate: number | null }) {
+  if (rate === null) return <span className="text-muted-foreground">—</span>;
+  const color = rate >= 95 ? "text-green-600" : rate >= 85 ? "text-yellow-600" : "text-red-600";
+  return <span className={`font-semibold ${color}`}>{rate}%</span>;
+}
 
 export default function SourceComparisonPage() {
-  const [dateRange, setDateRange] = useState({ preset: "last30", from: format(subDays(new Date(), 30), "yyyy-MM-dd"), to: format(new Date(), "yyyy-MM-dd") });
-  const [rows, setRows] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [sortField, setSortField] = useState("wordpressCount");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const router      = useRouter();
+  const sp          = useSearchParams();
 
-  const fetchData = useCallback(async () => {
+  const [dateRange, setDateRange] = useState(() => {
+    const from = sp.get("from"); const to = sp.get("to");
+    const preset = sp.get("preset") || "last30";
+    if (from && to) return { preset, from, to };
+    const r = gdr(preset);
+    return { preset, from: format(r.from, "yyyy-MM-dd"), to: format(r.to, "yyyy-MM-dd") };
+  });
+
+  const [groupBy,  setGroupBy]  = useState<DateGrouping>((sp.get("groupBy") as DateGrouping) || "daily");
+  const [timezone, setTimezone] = useState<ReportingTimezone>((sp.get("timezone") as ReportingTimezone) || "America/Toronto");
+  const [statusFilter, setStatusFilter] = useState(sp.get("status") || "all");
+  const [sortField, setSortField] = useState("periodStart");
+  const [sortDir,   setSortDir]   = useState<"asc" | "desc">("desc");
+  const [rows, setRows]  = useState<SourceComparisonRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [drillData, setDrillData] = useState<any[] | null>(null);
+
+  const syncUrl = useCallback((dr: typeof dateRange, gb: DateGrouping, tz: ReportingTimezone, status: string) => {
+    const p = new URLSearchParams({ preset: dr.preset || "custom", from: dr.from || "", to: dr.to || "", groupBy: gb, timezone: tz, status });
+    router.replace(`?${p}`, { scroll: false });
+  }, [router]);
+
+  const loadData = useCallback(async () => {
+    if (!dateRange.from || !dateRange.to) return;
     setLoading(true);
-    const params = new URLSearchParams({ from: dateRange.from, to: dateRange.to });
+    const params = new URLSearchParams({ from: dateRange.from, to: dateRange.to, groupBy, timezone });
     const res = await fetch(`/api/source-comparison?${params}`);
     setRows(await res.json());
     setLoading(false);
-  }, [dateRange]);
+  }, [dateRange, groupBy, timezone]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { loadData(); }, [loadData]);
 
   function handleDateChange(v: any) {
+    let next: typeof dateRange;
     if (v.preset && v.preset !== "custom") {
       const { from, to } = getDateRangeFromPreset(v.preset);
-      setDateRange({ preset: v.preset, from: format(from, "yyyy-MM-dd"), to: format(to, "yyyy-MM-dd") });
-    } else setDateRange(v);
+      next = { preset: v.preset, from: format(from, "yyyy-MM-dd"), to: format(to, "yyyy-MM-dd") };
+    } else next = v;
+    setDateRange(next);
+    syncUrl(next, groupBy, timezone, statusFilter);
+  }
+
+  function handleGroupBy(val: string) {
+    const gb = val as DateGrouping;
+    setGroupBy(gb); syncUrl(dateRange, gb, timezone, statusFilter);
+  }
+
+  function handleTimezone(val: string) {
+    const tz = val as ReportingTimezone;
+    setTimezone(tz); syncUrl(dateRange, groupBy, tz, statusFilter);
+  }
+
+  async function toggleDrilldown(row: SourceComparisonRow) {
+    if (expanded === row.periodStart) { setExpanded(null); setDrillData(null); return; }
+    setExpanded(row.periodStart);
+    const p = new URLSearchParams({ drilldown: "true", periodStart: row.periodStart, periodEnd: row.periodEnd, by: "clinic" });
+    const res = await fetch(`/api/source-comparison?${p}`);
+    setDrillData(await res.json());
   }
 
   function toggleSort(field: string) {
@@ -44,112 +97,179 @@ export default function SourceComparisonPage() {
   }
 
   const filtered = rows
-    .filter((r) => {
-      const q = search.toLowerCase();
-      return (!q || r.clinicLocation?.toLowerCase().includes(q) || r.service?.toLowerCase().includes(q)) &&
-        (statusFilter === "all" || r.status === statusFilter);
-    })
+    .filter((r) => statusFilter === "all" || r.status === statusFilter)
     .sort((a, b) => {
-      const v = sortDir === "asc" ? 1 : -1;
-      return (a[sortField] > b[sortField] ? 1 : -1) * v;
+      const av = (a as any)[sortField] ?? ""; const bv = (b as any)[sortField] ?? "";
+      return (av > bv ? 1 : av < bv ? -1 : 0) * (sortDir === "asc" ? 1 : -1);
     });
 
-  const totals = filtered.reduce((acc, r) => ({
-    wordpress: acc.wordpress + r.wordpressCount,
-    meta: acc.meta + r.metaCount,
-    ghl: acc.ghl + r.ghlCount,
-    zenoti: acc.zenoti + r.zenotiCount,
-  }), { wordpress: 0, meta: 0, ghl: 0, zenoti: 0 });
+  const totals = filtered.reduce(
+    (acc, r) => ({
+      website: acc.website + r.websiteLeads,
+      meta:    acc.meta    + r.metaLeads,
+      src:     acc.src     + r.totalSourceLeads,
+      ghl:     acc.ghl     + r.ghlLeads,
+      zenoti:  acc.zenoti  + r.zenotiLeads,
+    }),
+    { website: 0, meta: 0, src: 0, ghl: 0, zenoti: 0 }
+  );
 
-  const SortHeader = ({ field, label }: { field: string; label: string }) => (
-    <button className="flex items-center gap-1 hover:text-foreground font-medium" onClick={() => toggleSort(field)}>
-      {label}
-      <ArrowUpDown className="w-3 h-3" />
+  const SortHead = ({ field, label }: { field: string; label: string }) => (
+    <button className="flex items-center gap-1 hover:text-foreground font-medium whitespace-nowrap" onClick={() => toggleSort(field)}>
+      {label} <ArrowUpDown className="w-3 h-3 opacity-60" />
     </button>
   );
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <TopBar title="Source Comparison" description="Compare lead counts across WordPress, Meta, GHL, and Zenoti" />
+      <TopBar title="Source Comparison" description="Date-based lead count: Website + Meta → GHL → Zenoti" />
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
+
         <div className="flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             <DateRangeFilter value={dateRange} onChange={handleDateChange} />
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input className="pl-9 w-48" placeholder="Search clinic/service..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-48"><SelectValue placeholder="Filter status" /></SelectTrigger>
+            <Select value={groupBy} onValueChange={handleGroupBy}>
+              <SelectTrigger className="w-[130px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {DATE_GROUPINGS.map((g) => (
+                  <SelectItem key={g} value={g}>{g.charAt(0).toUpperCase() + g.slice(1)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={timezone} onValueChange={handleTimezone}>
+              <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {REPORTING_TIMEZONES.map((tz) => (
+                  <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); syncUrl(dateRange, groupBy, timezone, v); }}>
+              <SelectTrigger className="w-[170px]"><SelectValue placeholder="All statuses" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="HEALTHY">Healthy</SelectItem>
-                <SelectItem value="MINOR_DISCREPANCY">Minor Discrepancy</SelectItem>
-                <SelectItem value="MAJOR_DISCREPANCY">Major Discrepancy</SelectItem>
-                <SelectItem value="MISSING_GHL">Missing in GHL</SelectItem>
-                <SelectItem value="MISSING_ZENOTI">Missing in Zenoti</SelectItem>
+                <SelectItem value="MATCHED">Matched</SelectItem>
+                <SelectItem value="MINOR_MISMATCH">Minor Mismatch</SelectItem>
+                <SelectItem value="MAJOR_MISMATCH">Major Mismatch</SelectItem>
+                <SelectItem value="MISSING_IN_GHL">Missing in GHL</SelectItem>
+                <SelectItem value="MISSING_IN_ZENOTI">Missing in Zenoti</SelectItem>
+                <SelectItem value="EXTRA_IN_GHL">Extra in GHL</SelectItem>
               </SelectContent>
             </Select>
           </div>
-          <ExportButton endpoint="/api/export" filename="source-comparison.csv" params={{ type: "source-comparison", from: dateRange.from, to: dateRange.to }} />
+          <ExportButton endpoint="/api/export" filename="source-comparison.csv"
+            params={{ type: "source-comparison", from: dateRange.from || "", to: dateRange.to || "" }} />
         </div>
 
-        {/* Summary cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Summary totals */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
-            { label: "WordPress", value: totals.wordpress, color: "text-blue-600 bg-blue-50" },
-            { label: "Meta", value: totals.meta, color: "text-purple-600 bg-purple-50" },
-            { label: "GHL", value: totals.ghl, color: "text-green-600 bg-green-50" },
-            { label: "Zenoti", value: totals.zenoti, color: "text-yellow-600 bg-yellow-50" },
+            { label: "Website Leads", value: totals.website, cls: "text-blue-600" },
+            { label: "Meta Leads",    value: totals.meta,    cls: "text-purple-600" },
+            { label: "Total Source",  value: totals.src,     cls: "text-indigo-600" },
+            { label: "GHL",           value: totals.ghl,     cls: "text-green-600" },
+            { label: "Zenoti",        value: totals.zenoti,  cls: "text-yellow-600" },
           ].map((s) => (
-            <Card key={s.label}><CardContent className="p-4">
-              <p className="text-xs text-muted-foreground mb-1">{s.label}</p>
-              <p className={`text-2xl font-bold ${s.color.split(" ")[0]}`}>{s.value}</p>
-            </CardContent></Card>
+            <Card key={s.label}>
+              <CardContent className="p-4">
+                <p className="text-xs text-muted-foreground">{s.label}</p>
+                <p className={`text-2xl font-bold tabular-nums ${s.cls}`}>{s.value}</p>
+              </CardContent>
+            </Card>
           ))}
         </div>
 
         <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-base">Comparison by Clinic × Service ({filtered.length} rows)</CardTitle></CardHeader>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">{filtered.length} periods · Click a row to drill down by clinic</CardTitle>
+          </CardHeader>
           <CardContent className="p-0">
             {loading ? (
-              <div className="p-8 text-center text-muted-foreground">Loading...</div>
+              <div className="p-8 text-center text-muted-foreground">Loading…</div>
             ) : filtered.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">No data found</div>
+              <div className="p-8 text-center text-muted-foreground">No data for this period. Upload CSVs or adjust filters.</div>
             ) : (
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead><SortHeader field="clinicLocation" label="Clinic" /></TableHead>
-                    <TableHead><SortHeader field="service" label="Service" /></TableHead>
-                    <TableHead className="text-right"><SortHeader field="wordpressCount" label="WordPress" /></TableHead>
-                    <TableHead className="text-right"><SortHeader field="metaCount" label="Meta" /></TableHead>
-                    <TableHead className="text-right"><SortHeader field="ghlCount" label="GHL" /></TableHead>
-                    <TableHead className="text-right"><SortHeader field="zenotiCount" label="Zenoti" /></TableHead>
-                    <TableHead className="text-right"><SortHeader field="sourcesToGhlDiff" label="Src↔GHL Diff" /></TableHead>
-                    <TableHead className="text-right"><SortHeader field="ghlToZenotoDiff" label="GHL↔Zenoti Diff" /></TableHead>
-                    <TableHead className="text-right"><SortHeader field="discrepancyPct" label="Discrepancy%" /></TableHead>
+                  <TableRow className="text-xs">
+                    <TableHead className="w-6" />
+                    <TableHead><SortHead field="periodStart" label="Period" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="websiteLeads" label="Website" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="metaLeads" label="Meta" /></TableHead>
+                    <TableHead className="text-right bg-indigo-50/40"><SortHead field="totalSourceLeads" label="Total Source" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="ghlLeads" label="GHL" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="zenotiLeads" label="Zenoti" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="srcToGhlDiff" label="Src↔GHL" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="ghlToZenotiDiff" label="GHL↔Zenoti" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="srcToGhlMatchRate" label="Src→GHL %" /></TableHead>
+                    <TableHead className="text-right"><SortHead field="ghlToZenotiMatchRate" label="GHL→Zenoti %" /></TableHead>
+                    <TableHead>Discrepancy</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map((row, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="font-medium">{row.clinicLocation || "—"}</TableCell>
-                      <TableCell>{row.service || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums">{row.wordpressCount}</TableCell>
-                      <TableCell className="text-right tabular-nums">{row.metaCount}</TableCell>
-                      <TableCell className="text-right tabular-nums">{row.ghlCount}</TableCell>
-                      <TableCell className="text-right tabular-nums">{row.zenotiCount}</TableCell>
-                      <TableCell className={`text-right tabular-nums font-medium ${row.sourcesToGhlDiff > 0 ? "text-red-600" : "text-green-600"}`}>
-                        {row.sourcesToGhlDiff > 0 ? `+${row.sourcesToGhlDiff}` : row.sourcesToGhlDiff}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-medium ${row.ghlToZenotoDiff > 0 ? "text-yellow-600" : "text-green-600"}`}>
-                        {row.ghlToZenotoDiff > 0 ? `+${row.ghlToZenotoDiff}` : row.ghlToZenotoDiff}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{row.discrepancyPct}%</TableCell>
-                      <TableCell><ReconciliationBadge status={row.status as ReconciliationStatus} /></TableCell>
-                    </TableRow>
+                  {filtered.map((row) => (
+                    <>
+                      <TableRow
+                        key={row.periodStart}
+                        className="text-sm cursor-pointer hover:bg-muted/40"
+                        onClick={() => toggleDrilldown(row)}
+                      >
+                        <TableCell className="py-2 px-2">
+                          {expanded === row.periodStart
+                            ? <ChevronDown className="w-3 h-3 text-muted-foreground" />
+                            : <ChevronRight className="w-3 h-3 text-muted-foreground" />}
+                        </TableCell>
+                        <TableCell className="font-medium whitespace-nowrap">{row.period}</TableCell>
+                        <TableCell className="text-right tabular-nums text-blue-600">{row.websiteLeads}</TableCell>
+                        <TableCell className="text-right tabular-nums text-purple-600">{row.metaLeads}</TableCell>
+                        <TableCell className="text-right tabular-nums font-semibold bg-indigo-50/40">{row.totalSourceLeads}</TableCell>
+                        <TableCell className="text-right tabular-nums text-green-600">{row.ghlLeads}</TableCell>
+                        <TableCell className="text-right tabular-nums text-yellow-600">{row.zenotiLeads}</TableCell>
+                        <TableCell className="text-right"><DiffCell val={row.srcToGhlDiff} /></TableCell>
+                        <TableCell className="text-right"><DiffCell val={row.ghlToZenotiDiff} /></TableCell>
+                        <TableCell className="text-right"><RateCell rate={row.srcToGhlMatchRate} /></TableCell>
+                        <TableCell className="text-right"><RateCell rate={row.ghlToZenotiMatchRate} /></TableCell>
+                        <TableCell><DiscrepancyBadge location={row.discrepancyLocation} /></TableCell>
+                        <TableCell><AuditStatusBadge status={row.status} /></TableCell>
+                      </TableRow>
+                      {expanded === row.periodStart && drillData && (
+                        <TableRow>
+                          <TableCell colSpan={13} className="p-0 bg-muted/30">
+                            <Table>
+                              <TableHeader>
+                                <TableRow className="text-xs bg-muted/50">
+                                  <TableHead className="pl-8">Clinic</TableHead>
+                                  <TableHead className="text-right">Website</TableHead>
+                                  <TableHead className="text-right">Meta</TableHead>
+                                  <TableHead className="text-right">Total Source</TableHead>
+                                  <TableHead className="text-right">GHL</TableHead>
+                                  <TableHead className="text-right">Zenoti</TableHead>
+                                  <TableHead className="text-right">Src↔GHL</TableHead>
+                                  <TableHead className="text-right">GHL↔Zenoti</TableHead>
+                                  <TableHead>Status</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {drillData.map((d) => (
+                                  <TableRow key={d.label} className="text-sm">
+                                    <TableCell className="pl-8 font-medium">{d.label}</TableCell>
+                                    <TableCell className="text-right tabular-nums text-blue-600">{d.websiteLeads}</TableCell>
+                                    <TableCell className="text-right tabular-nums text-purple-600">{d.metaLeads}</TableCell>
+                                    <TableCell className="text-right tabular-nums font-semibold">{d.totalSourceLeads}</TableCell>
+                                    <TableCell className="text-right tabular-nums text-green-600">{d.ghlLeads}</TableCell>
+                                    <TableCell className="text-right tabular-nums text-yellow-600">{d.zenotiLeads}</TableCell>
+                                    <TableCell className="text-right"><DiffCell val={d.srcToGhlDiff} /></TableCell>
+                                    <TableCell className="text-right"><DiffCell val={d.ghlToZenotiDiff} /></TableCell>
+                                    <TableCell><AuditStatusBadge status={d.status} /></TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </>
                   ))}
                 </TableBody>
               </Table>

@@ -8,18 +8,15 @@ datasource db {
 }
 
 enum SourceSystem {
-  WORDPRESS
+  WEBSITE
   META
   GHL
   ZENOTI
 }
 
-enum MatchStatus {
-  MATCHED
-  POSSIBLE_MATCH
-  UNMATCHED
-  DUPLICATE
-  NEEDS_REVIEW
+enum RecordType {
+  INDIVIDUAL_LEAD
+  AGGREGATE_REPORT
 }
 
 enum ImportStatus {
@@ -29,122 +26,215 @@ enum ImportStatus {
   FAILED
 }
 
-enum ReconciliationStatus {
-  HEALTHY
-  MINOR_DISCREPANCY
-  MAJOR_DISCREPANCY
-  MISSING_GHL
-  MISSING_ZENOTI
-  DUPLICATE_ISSUE
+enum SyncStatus {
+  IDLE
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum SyncType {
+  API
+  CSV
+}
+
+enum AuditStatus {
+  MATCHED
+  MISSING_IN_GHL
+  EXTRA_IN_GHL
+  MISSING_IN_ZENOTI
+  EXTRA_IN_ZENOTI
+  MINOR_MISMATCH
+  MAJOR_MISMATCH
+  NEEDS_MAPPING
+  NEEDS_REVIEW
+}
+
+enum DiscrepancyLocation {
+  NONE
+  SOURCE_TO_GHL
+  GHL_TO_ZENOTI
+  BOTH
+  NEEDS_MAPPING
   NEEDS_REVIEW
 }
 
 model LeadSourceRecord {
-  id                     String       @id @default(cuid())
-  sourceSystem           SourceSystem
-  externalId             String?
-  createdAtSource        DateTime?
-  importedAt             DateTime     @default(now())
+  id                       String      @id @default(cuid())
+  sourceSystem             SourceSystem
+  recordType               RecordType  @default(INDIVIDUAL_LEAD)
+  backendProvider          String?     // GRAVITY_FORMS, META_ADS, GHL, ZENOTI
 
-  firstName              String?
-  lastName               String?
-  fullName               String?
-  email                  String?
-  phone                  String?
-  normalizedEmail        String?
-  normalizedPhone        String?
+  externalId               String?
+  createdAtSource          DateTime?
+  reportDate               DateTime?   // for Meta aggregate rows
+  sourceTimezone           String?
+  importedAt               DateTime    @default(now())
 
-  clinicLocationRaw      String?
+  // Contact info (not required for Meta aggregate rows)
+  firstName                String?
+  lastName                 String?
+  fullName                 String?
+  email                    String?
+  phone                    String?
+  normalizedEmail          String?
+  normalizedPhone          String?
+
+  // Location/service
+  clinicLocationRaw        String?
   clinicLocationNormalized String?
-  serviceRaw             String?
-  serviceNormalized      String?
+  serviceRaw               String?
+  serviceNormalized        String?
 
-  campaignName           String?
-  adSetName              String?
-  adName                 String?
-  formName               String?
-  formId                 String?
-  leadSource             String?
+  // Attribution
+  campaignName             String?
+  attributedChannel        String?
+  leadSource               String?
 
-  pageUrl                String?
-  landingPageUrl         String?
-  referrerUrl            String?
-  utmSource              String?
-  utmMedium              String?
-  utmCampaign            String?
-  utmContent             String?
-  utmTerm                String?
-  wordpressSubmissionId  String?
-  wordpressFormPlugin    String?
+  // Website Lead fields
+  formName                 String?
+  formId                   String?
+  websiteFormSource        String?     // Popup, Website Quiz, Landing Page Form, etc.
+  pageUrl                  String?
+  landingPageUrl           String?
+  referrerUrl              String?
+  utmSource                String?
+  utmMedium                String?
+  utmCampaign              String?
+  utmContent               String?
+  utmTerm                  String?
+  fbclid                   String?
+  gravityFormsEntryId      String?
+  gravityFormsFormId       String?
 
-  ghlContactId           String?
-  ghlOpportunityId       String?
-  zenotiGuestId          String?
-  zenotiAppointmentId    String?
+  // Meta Ads fields
+  metaObjective            String?
+  metaConversionGoal       String?
+  metaResultType           String?
+  metaResults              Float?      // raw results value from Meta reporting
+  metaLeadCount            Int?        // computed: metaResults when resultType=Lead, else 0
+  spend                    Float?
+  costPerResult            Float?
+  impressions              Int?
+  reach                    Int?
+  clicks                   Int?
+  linkClicks               Int?
+  landingPageViews         Int?
+  attributionSetting       String?
+  metaCampaignId           String?
+  metaAdSetName            String?
+  metaAdSetId              String?
+  metaAdName               String?
+  metaAdId                 String?
 
-  status                 String?
-  isDuplicate            Boolean      @default(false)
-  duplicateOfId          String?
+  // GHL fields
+  ghlContactId             String?
+  ghlOpportunityId         String?
+  ghlPipelineName          String?
+  ghlPipelineId            String?
+  ghlStageName             String?
+  ghlStageId               String?
 
-  rawPayload             Json?
-  importBatchId          String?
+  // Zenoti fields
+  zenotiLeadId             String?
+  zenotiInquiryId          String?
+  zenotiProspectId         String?
+  zenotiGuestId            String?
+  zenotiCenterName         String?
+  leadCreatedDate          DateTime?
+  inquiryDate              DateTime?
+  guestCreatedDate         DateTime?
+  appointmentDate          DateTime?   // optional secondary context
+  bookingDate              DateTime?   // optional secondary context
+  zenotiAppointmentId      String?     // optional secondary context
+  appointmentStatus        String?     // optional secondary context
 
-  createdAt              DateTime     @default(now())
-  updatedAt              DateTime     @updatedAt
+  status                   String?
+  isDuplicate              Boolean     @default(false)
+  isAppointmentBased       Boolean     @default(false) // flag when Zenoti source is appointment-based only
 
-  importBatch            ImportBatch? @relation(fields: [importBatchId], references: [id])
-  primaryMatches         LeadMatch[]  @relation("PrimaryLead")
-  matchedMatches         LeadMatch[]  @relation("MatchedLead")
+  rawPayload               Json?
+  importBatchId            String?
 
+  createdAt                DateTime    @default(now())
+  updatedAt                DateTime    @updatedAt
+
+  importBatch              ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  @@unique([sourceSystem, externalId], name: "unique_source_external")
   @@index([sourceSystem])
+  @@index([createdAtSource])
+  @@index([reportDate])
+  @@index([sourceSystem, createdAtSource])
+  @@index([sourceSystem, reportDate])
+  @@index([clinicLocationNormalized, createdAtSource])
+  @@index([serviceNormalized, createdAtSource])
+  @@index([websiteFormSource, createdAtSource])
+  @@index([formName, createdAtSource])
+  @@index([campaignName, createdAtSource])
+  @@index([metaResultType, reportDate])
+  @@index([metaCampaignId, reportDate])
+  @@index([ghlPipelineId, createdAtSource])
+  @@index([zenotiCenterName, createdAtSource])
+  @@index([zenotiLeadId])
+  @@index([zenotiInquiryId])
+  @@index([zenotiProspectId])
+  @@index([leadCreatedDate])
+  @@index([inquiryDate])
   @@index([normalizedPhone])
   @@index([normalizedEmail])
-  @@index([clinicLocationNormalized])
-  @@index([serviceNormalized])
-  @@index([createdAtSource])
   @@index([importBatchId])
+  @@index([isDuplicate])
 }
 
-model LeadMatch {
-  id             String      @id @default(cuid())
-  primaryLeadId  String
-  matchedLeadId  String
-  matchScore     Int         @default(0)
-  matchStatus    MatchStatus @default(UNMATCHED)
-  matchReasons   Json?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+model ImportBatch {
+  id                       String       @id @default(cuid())
+  sourceSystem             SourceSystem
+  fileName                 String
+  uploadedBy               String?
+  totalRows                Int          @default(0)
+  validRows                Int          @default(0)
+  invalidRows              Int          @default(0)
+  duplicateRows            Int          @default(0)
+  unmappedClinicRows       Int          @default(0)
+  unmappedServiceRows      Int          @default(0)
+  unmappedFormSourceRows   Int          @default(0)
+  importedDateRangeStart   DateTime?
+  importedDateRangeEnd     DateTime?
+  status                   ImportStatus @default(PENDING)
+  errorSummary             Json?
+  createdAt                DateTime     @default(now())
 
-  primaryLead    LeadSourceRecord @relation("PrimaryLead", fields: [primaryLeadId], references: [id])
-  matchedLead    LeadSourceRecord @relation("MatchedLead", fields: [matchedLeadId], references: [id])
-
-  @@unique([primaryLeadId, matchedLeadId])
-  @@index([primaryLeadId])
-  @@index([matchedLeadId])
-  @@index([matchStatus])
+  leads                    LeadSourceRecord[]
 }
 
-model WordPressFormSummary {
-  id                            String               @id @default(cuid())
-  formName                      String
-  formId                        String?
-  wordpressFormPlugin           String?
-  pageUrl                       String?
-  totalSubmissions              Int                  @default(0)
-  uniqueLeads                   Int                  @default(0)
-  duplicateSubmissions          Int                  @default(0)
-  ghlMatchedCount               Int                  @default(0)
-  zenotiMatchedCount            Int                  @default(0)
-  missingInGhlCount             Int                  @default(0)
-  missingInZenotiCount          Int                  @default(0)
-  formToGhlReconciliationRate   Float                @default(0)
-  formToZenotiReconciliationRate Float               @default(0)
-  reconciliationStatus          ReconciliationStatus @default(NEEDS_REVIEW)
-  lastSubmissionAt              DateTime?
-  createdAt                     DateTime             @default(now())
-  updatedAt                     DateTime             @updatedAt
+model SyncRun {
+  id               String       @id @default(cuid())
+  sourceSystem     SourceSystem
+  syncType         SyncType     @default(API)
+  startedAt        DateTime     @default(now())
+  finishedAt       DateTime?
+  status           SyncStatus   @default(RUNNING)
+  recordsFetched   Int          @default(0)
+  recordsCreated   Int          @default(0)
+  recordsUpdated   Int          @default(0)
+  recordsSkipped   Int          @default(0)
+  errorMessage     String?
+  dateRangeStart   DateTime?
+  dateRangeEnd     DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+}
 
-  @@index([formName])
+model IntegrationSettings {
+  id           String       @id @default(cuid())
+  sourceSystem SourceSystem @unique
+  provider     String?
+  enabled      Boolean      @default(false)
+  config       Json?        // non-secret config (pipeline IDs, form IDs, etc.)
+  lastSyncedAt DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 }
 
 model ClinicMapping {
@@ -174,18 +264,22 @@ model SourceMapping {
   updatedAt       DateTime @updatedAt
 }
 
-model ImportBatch {
-  id           String       @id @default(cuid())
-  sourceSystem SourceSystem
-  fileName     String
-  uploadedBy   String?
-  totalRows    Int          @default(0)
-  validRows    Int          @default(0)
-  invalidRows  Int          @default(0)
-  duplicateRows Int         @default(0)
-  status       ImportStatus @default(PENDING)
-  errorSummary Json?
-  createdAt    DateTime     @default(now())
+model WebsiteFormSourceMapping {
+  id              String   @id @default(cuid())
+  rawValue        String   @unique
+  normalizedValue String   // Popup, Website Quiz, Landing Page Form, etc.
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
 
-  leads        LeadSourceRecord[]
+model WebsiteFormNameMapping {
+  id              String   @id @default(cuid())
+  rawValue        String   @unique
+  normalizedValue String
+  formId          String?
+  backendProvider String?  // GRAVITY_FORMS, etc.
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }

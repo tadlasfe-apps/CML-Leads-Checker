@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
-import { getImportHistory } from "@/lib/data";
+import prisma from "@/lib/prisma";
 
 export async function GET() {
-  const data = await getImportHistory();
-  return NextResponse.json(data);
+  const history = await prisma.importBatch.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+  return NextResponse.json(history);
 }

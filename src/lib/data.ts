@@ -1,294 +1,678 @@
 import prisma from "./prisma";
-import { subDays } from "date-fns";
+import {
+  format, startOfDay, endOfDay, startOfWeek,
+  startOfMonth, startOfQuarter,
+  parseISO,
+} from "date-fns";
+
+function toZonedTime(date: Date, tz: string): Date {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(date);
+  const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? "0", 10);
+  const y = get("year"); const mo = get("month") - 1; const d = get("day");
+  const h = get("hour") % 24; const mi = get("minute"); const s = get("second");
+  return new Date(y, mo, d, h, mi, s);
+}
+import type {
+  AuditStatus, DiscrepancyLocation, DateGrouping, ReportingTimezone,
+  OverviewKPIs, TimelineEntry, SourceComparisonRow, ClinicBreakdownRow,
+  ServiceBreakdownRow, WebsiteFormRow,
+} from "@/types";
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function pct(num: number, denom: number): number | null {
+  if (denom === 0) return null;
+  return Math.round((num / denom) * 1000) / 10; // 1 decimal
+}
 
 export function buildDateFilter(from?: string, to?: string) {
   if (!from && !to) return undefined;
-  return {
-    gte: from ? new Date(from) : subDays(new Date(), 90),
-    lte: to ? new Date(to + "T23:59:59") : new Date(),
-  };
+  const filter: Record<string, Date> = {};
+  if (from) filter.gte = startOfDay(parseISO(from));
+  if (to) filter.lte = endOfDay(parseISO(to));
+  return filter;
 }
 
-export async function getOverviewKPIs(from?: string, to?: string) {
-  const dateFilter = buildDateFilter(from, to);
-  const where = dateFilter ? { createdAtSource: dateFilter } : {};
-
-  const [wp, meta, ghl, zenoti, duplicates] = await Promise.all([
-    prisma.leadSourceRecord.count({ where: { ...where, sourceSystem: "WORDPRESS" } }),
-    prisma.leadSourceRecord.count({ where: { ...where, sourceSystem: "META" } }),
-    prisma.leadSourceRecord.count({ where: { ...where, sourceSystem: "GHL" } }),
-    prisma.leadSourceRecord.count({ where: { ...where, sourceSystem: "ZENOTI" } }),
-    prisma.leadSourceRecord.count({ where: { ...where, isDuplicate: true } }),
-  ]);
-
-  const totalSource = wp + meta;
-
-  const matched = await prisma.leadMatch.count({
-    where: {
-      matchStatus: "MATCHED",
-      primaryLead: { sourceSystem: { in: ["WORDPRESS", "META"] }, ...(dateFilter ? { createdAtSource: dateFilter } : {}) },
-    },
-  });
-
-  const missingInGhl = Math.max(0, totalSource - ghl);
-  const missingInZenoti = Math.max(0, ghl - zenoti);
-  const reconciliationRate = totalSource > 0 ? Math.round((matched / totalSource) * 100) : 0;
-
-  return {
-    totalSourceLeads: totalSource,
-    wordpressLeads: wp,
-    metaLeads: meta,
-    ghlLeads: ghl,
-    zenotiLeads: zenoti,
-    matchedLeads: matched,
-    missingInGhl,
-    missingInZenoti,
-    duplicateLeads: duplicates,
-    reconciliationRate,
-  };
-}
-
-export async function getSourceComparison(from?: string, to?: string, clinicFilter?: string, serviceFilter?: string) {
-  const dateFilter = buildDateFilter(from, to);
-
-  const baseWhere = {
-    ...(dateFilter ? { createdAtSource: dateFilter } : {}),
-    ...(clinicFilter ? { clinicLocationNormalized: clinicFilter } : {}),
-    ...(serviceFilter ? { serviceNormalized: serviceFilter } : {}),
-  };
-
-  const [wpRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized", "serviceNormalized"],
-      where: { ...baseWhere, sourceSystem: "WORDPRESS" },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized", "serviceNormalized"],
-      where: { ...baseWhere, sourceSystem: "META" },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized", "serviceNormalized"],
-      where: { ...baseWhere, sourceSystem: "GHL" },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized", "serviceNormalized"],
-      where: { ...baseWhere, sourceSystem: "ZENOTI" },
-      _count: { id: true },
-    }),
-  ]);
-
-  const keySet = new Set<string>();
-  const toMap = (rows: typeof wpRows) => {
-    const map: Record<string, number> = {};
-    for (const r of rows) {
-      const key = `${r.clinicLocationNormalized || "Unknown"}::${r.serviceNormalized || "Other"}`;
-      map[key] = r._count.id;
-      keySet.add(key);
-    }
-    return map;
-  };
-
-  const wpMap = toMap(wpRows);
-  const metaMap = toMap(metaRows);
-  const ghlMap = toMap(ghlRows);
-  const zenotiMap = toMap(zenotiRows);
-
-  return Array.from(keySet).map((key) => {
-    const [clinic, service] = key.split("::");
-    const wp = wpMap[key] || 0;
-    const meta = metaMap[key] || 0;
-    const g = ghlMap[key] || 0;
-    const z = zenotiMap[key] || 0;
-    const totalSource = wp + meta;
-    const diff1 = totalSource - g;
-    const diff2 = g - z;
-    const discPct = totalSource > 0 ? Math.round((Math.abs(diff1) / totalSource) * 100) : 0;
-
-    let status: string = "HEALTHY";
-    if (discPct === 0 && diff2 === 0) status = "HEALTHY";
-    else if (g === 0 && totalSource > 0) status = "MISSING_GHL";
-    else if (z === 0 && g > 0) status = "MISSING_ZENOTI";
-    else if (discPct >= 15) status = "MAJOR_DISCREPANCY";
-    else if (discPct > 0) status = "MINOR_DISCREPANCY";
-
-    return { clinicLocation: clinic, service, wordpressCount: wp, metaCount: meta, ghlCount: g, zenotiCount: z,
-      sourcesToGhlDiff: diff1, ghlToZenotoDiff: diff2, discrepancyPct: discPct, status };
-  }).sort((a, b) => (b.wordpressCount + b.metaCount) - (a.wordpressCount + a.metaCount));
-}
-
-export async function getClinicBreakdown(from?: string, to?: string) {
-  const dateFilter = buildDateFilter(from, to);
-  const where = dateFilter ? { createdAtSource: dateFilter } : {};
-
-  const rows = await prisma.leadSourceRecord.groupBy({
-    by: ["clinicLocationNormalized", "sourceSystem"],
-    where,
-    _count: { id: true },
-  });
-
-  const clinics = new Map<string, Record<string, number>>();
-  for (const r of rows) {
-    const clinic = r.clinicLocationNormalized || "Unknown";
-    if (!clinics.has(clinic)) clinics.set(clinic, {});
-    clinics.get(clinic)![r.sourceSystem] = r._count.id;
-  }
-
-  const dupes = await prisma.leadSourceRecord.groupBy({
-    by: ["clinicLocationNormalized"],
-    where: { ...where, isDuplicate: true },
-    _count: { id: true },
-  });
-  const dupeMap = Object.fromEntries(dupes.map((d) => [d.clinicLocationNormalized || "Unknown", d._count.id]));
-
-  return Array.from(clinics.entries()).map(([clinic, bySrc]) => ({
-    clinicLocation: clinic,
-    totalLeads: Object.values(bySrc).reduce((a: number, b: number) => a + b, 0),
-    wordpressLeads: bySrc["WORDPRESS"] || 0,
-    metaLeads: bySrc["META"] || 0,
-    ghlLeads: bySrc["GHL"] || 0,
-    zenotiLeads: bySrc["ZENOTI"] || 0,
-    duplicateCount: dupeMap[clinic] || 0,
-  })).sort((a, b) => b.totalLeads - a.totalLeads);
-}
-
-export async function getServiceBreakdown(from?: string, to?: string) {
-  const dateFilter = buildDateFilter(from, to);
-  const where = dateFilter ? { createdAtSource: dateFilter } : {};
-
-  const rows = await prisma.leadSourceRecord.groupBy({
-    by: ["serviceNormalized", "sourceSystem"],
-    where,
-    _count: { id: true },
-  });
-
-  const services = new Map<string, Record<string, number>>();
-  for (const r of rows) {
-    const svc = r.serviceNormalized || "Other";
-    if (!services.has(svc)) services.set(svc, {});
-    services.get(svc)![r.sourceSystem] = r._count.id;
-  }
-
-  return Array.from(services.entries()).map(([service, bySrc]) => ({
-    service,
-    totalLeads: Object.values(bySrc).reduce((a: number, b: number) => a + b, 0),
-    wordpressLeads: bySrc["WORDPRESS"] || 0,
-    metaLeads: bySrc["META"] || 0,
-    ghlLeads: bySrc["GHL"] || 0,
-    zenotiLeads: bySrc["ZENOTI"] || 0,
-  })).sort((a, b) => b.totalLeads - a.totalLeads);
-}
-
-export async function getWordPressForms(from?: string, to?: string) {
-  const dateFilter = buildDateFilter(from, to);
-
-  return prisma.wordPressFormSummary.findMany({
-    orderBy: { totalSubmissions: "desc" },
-  });
-}
-
-export async function getWordPressFormLeads(formName: string, from?: string, to?: string) {
-  const dateFilter = buildDateFilter(from, to);
-  return prisma.leadSourceRecord.findMany({
-    where: {
-      sourceSystem: "WORDPRESS",
-      formName,
-      ...(dateFilter ? { createdAtSource: dateFilter } : {}),
-    },
-    orderBy: { createdAtSource: "desc" },
-    take: 200,
-  });
-}
-
-export async function getReconciliationLeads(
-  status?: string, source?: string, clinic?: string, service?: string, from?: string, to?: string, page = 1
+function sourceWhereDate(
+  from?: string, to?: string, extra: object = {}
 ) {
   const dateFilter = buildDateFilter(from, to);
-  const PAGE_SIZE = 50;
+  return {
+    ...extra,
+    ...(dateFilter ? { createdAtSource: dateFilter } : {}),
+  };
+}
 
-  const where = {
-    ...(source ? { sourceSystem: source as "WORDPRESS" | "META" | "GHL" | "ZENOTI" } : {}),
+function computeAuditStatus(
+  websiteLeads: number,
+  metaLeads: number,
+  ghlLeads: number,
+  zenotiLeads: number
+): AuditStatus {
+  const src = websiteLeads + metaLeads;
+  const srcGhlDiff = src - ghlLeads;
+  const ghlZenotiDiff = ghlLeads - zenotiLeads;
+
+  if (src === 0 && ghlLeads === 0 && zenotiLeads === 0) return "MATCHED";
+
+  const srcGhlPct = src > 0 ? Math.abs(srcGhlDiff) / src : 0;
+  const ghlZenotiPct = ghlLeads > 0 ? Math.abs(ghlZenotiDiff) / ghlLeads : 0;
+
+  if (srcGhlDiff === 0 && ghlZenotiDiff === 0) return "MATCHED";
+
+  if (srcGhlDiff > 0 && ghlLeads === 0 && src > 0) return "MISSING_IN_GHL";
+  if (srcGhlDiff < 0) return "EXTRA_IN_GHL";
+  if (ghlZenotiDiff > 0 && zenotiLeads === 0 && ghlLeads > 0) return "MISSING_IN_ZENOTI";
+  if (ghlZenotiDiff < 0) return "EXTRA_IN_ZENOTI";
+
+  const maxPct = Math.max(srcGhlPct, ghlZenotiPct);
+  const maxAbs = Math.max(Math.abs(srcGhlDiff), Math.abs(ghlZenotiDiff));
+
+  if (maxPct > 0.05 || maxAbs > 3) return "MAJOR_MISMATCH";
+  if (maxPct > 0 || maxAbs > 0) return "MINOR_MISMATCH";
+  return "MATCHED";
+}
+
+function computeDiscrepancyLocation(
+  src: number, ghlLeads: number, zenotiLeads: number
+): DiscrepancyLocation {
+  const srcGhlMatch = src === ghlLeads;
+  const ghlZenotiMatch = ghlLeads === zenotiLeads;
+  if (srcGhlMatch && ghlZenotiMatch) return "NONE";
+  if (!srcGhlMatch && ghlZenotiMatch) return "SOURCE_TO_GHL";
+  if (srcGhlMatch && !ghlZenotiMatch) return "GHL_TO_ZENOTI";
+  return "BOTH";
+}
+
+// ─── Date grouping ────────────────────────────────────────────────────────────
+
+function getPeriodKey(date: Date, grouping: DateGrouping, tz: ReportingTimezone): string {
+  const zoned = toZonedTime(date, tz);
+  switch (grouping) {
+    case "daily":   return format(zoned, "yyyy-MM-dd");
+    case "weekly":  return format(startOfWeek(zoned, { weekStartsOn: 1 }), "yyyy-MM-dd");
+    case "monthly": return format(zoned, "yyyy-MM");
+    case "quarterly": {
+      const q = Math.ceil((zoned.getMonth() + 1) / 3);
+      return `${zoned.getFullYear()}-Q${q}`;
+    }
+  }
+}
+
+function periodLabel(key: string, grouping: DateGrouping): string {
+  if (grouping === "daily") return format(parseISO(key), "MMM d, yyyy");
+  if (grouping === "weekly") return `W/o ${format(parseISO(key), "MMM d")}`;
+  if (grouping === "monthly") {
+    const [y, m] = key.split("-");
+    return format(new Date(+y, +m - 1, 1), "MMM yyyy");
+  }
+  return key; // quarterly: 2025-Q1
+}
+
+// ─── Overview KPIs ────────────────────────────────────────────────────────────
+
+export async function getOverviewKPIs(
+  from?: string, to?: string,
+  clinic?: string, service?: string
+): Promise<OverviewKPIs> {
+  const baseWhere = {
     ...(clinic ? { clinicLocationNormalized: clinic } : {}),
     ...(service ? { serviceNormalized: service } : {}),
-    ...(dateFilter ? { createdAtSource: dateFilter } : {}),
-    ...(status === "duplicate" ? { isDuplicate: true } : {}),
   };
+  const dateFilter = buildDateFilter(from, to);
+  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
 
-  const [leads, total] = await Promise.all([
-    prisma.leadSourceRecord.findMany({
-      where,
-      orderBy: { createdAtSource: "desc" },
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-      include: {
-        primaryMatches: {
-          take: 1,
-          orderBy: { matchScore: "desc" },
-        },
-      },
+  const [websiteCount, metaSum, ghlCount, zenotiCount, dupeCount] =
+    await Promise.all([
+      prisma.leadSourceRecord.count({
+        where: { ...baseWhere, ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      }),
+      prisma.leadSourceRecord.aggregate({
+        where: { ...baseWhere, ...(dateFilter ? { reportDate: dateFilter } : {}), sourceSystem: "META" },
+        _sum: { metaLeadCount: true },
+      }),
+      prisma.leadSourceRecord.count({
+        where: { ...baseWhere, ...dateWhere, sourceSystem: "GHL" },
+      }),
+      prisma.leadSourceRecord.count({
+        where: { ...baseWhere, ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      }),
+      prisma.leadSourceRecord.count({
+        where: { ...baseWhere, ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: true },
+      }),
+    ]);
+
+  const metaLeads = metaSum._sum.metaLeadCount ?? 0;
+  const totalSource = websiteCount + metaLeads;
+  const srcToGhlDiff = totalSource - ghlCount;
+  const ghlToZenotiDiff = ghlCount - zenotiCount;
+
+  // Unmapped counts
+  const [unmappedClinic, unmappedService] = await Promise.all([
+    prisma.leadSourceRecord.groupBy({
+      by: ["clinicLocationNormalized"],
+      where: { ...dateWhere, clinicLocationNormalized: "Unknown" },
+      _count: { id: true },
     }),
-    prisma.leadSourceRecord.count({ where }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["serviceNormalized"],
+      where: { ...dateWhere, serviceNormalized: "Other" },
+      _count: { id: true },
+    }),
   ]);
 
-  return { leads, total, page, pageSize: PAGE_SIZE, totalPages: Math.ceil(total / PAGE_SIZE) };
+  // Timeline for discrepancy date counts
+  const timeline = await getLeadTimeline(from, to, "daily", "America/Toronto", clinic, service);
+  const datesWithSrcGhl = timeline.filter((t) => t.srcToGhlDiff !== 0).length;
+  const datesWithGhlZenoti = timeline.filter((t) => t.ghlToZenotiDiff !== 0).length;
+
+  let biggestDiscrepancyDate: string | null = null;
+  let biggestDiscrepancyValue = 0;
+  for (const t of timeline) {
+    const val = Math.max(Math.abs(t.srcToGhlDiff), Math.abs(t.ghlToZenotiDiff));
+    if (val > biggestDiscrepancyValue) {
+      biggestDiscrepancyValue = val;
+      biggestDiscrepancyDate = t.date;
+    }
+  }
+
+  return {
+    websiteLeads: websiteCount,
+    metaLeads,
+    totalSourceLeads: totalSource,
+    ghlLeads: ghlCount,
+    zenotiLeads: zenotiCount,
+    srcToGhlDiff,
+    ghlToZenotiDiff,
+    srcToGhlMatchRate: pct(ghlCount, totalSource),
+    ghlToZenotiMatchRate: pct(zenotiCount, ghlCount),
+    datesWithSrcGhlDiscrepancy: datesWithSrcGhl,
+    datesWithGhlZenotiDiscrepancy: datesWithGhlZenoti,
+    biggestDiscrepancyDate,
+    biggestDiscrepancyValue,
+    duplicateWebsiteLeads: dupeCount,
+    unmappedClinicCount: unmappedClinic.length,
+    unmappedServiceCount: unmappedService.length,
+  };
 }
 
-export async function getLeadTimelineData(from?: string, to?: string) {
+// ─── Lead Timeline ────────────────────────────────────────────────────────────
+
+export async function getLeadTimeline(
+  from?: string, to?: string,
+  grouping: DateGrouping = "daily",
+  tz: ReportingTimezone = "America/Toronto",
+  clinic?: string, service?: string
+): Promise<TimelineEntry[]> {
+  const baseWhere = {
+    ...(clinic ? { clinicLocationNormalized: clinic } : {}),
+    ...(service ? { serviceNormalized: service } : {}),
+  };
   const dateFilter = buildDateFilter(from, to);
-  let rows: { day: Date; source: string; cnt: bigint }[];
-  if (dateFilter) {
-    rows = await prisma.$queryRaw`
-      SELECT DATE_TRUNC('day', "createdAtSource") as day, "sourceSystem" as source, COUNT(*) as cnt
-      FROM "LeadSourceRecord"
-      WHERE "createdAtSource" IS NOT NULL
-        AND "createdAtSource" >= ${dateFilter.gte}
-        AND "createdAtSource" <= ${dateFilter.lte}
-      GROUP BY 1, 2
-      ORDER BY 1
-    `;
-  } else {
-    rows = await prisma.$queryRaw`
-      SELECT DATE_TRUNC('day', "createdAtSource") as day, "sourceSystem" as source, COUNT(*) as cnt
-      FROM "LeadSourceRecord"
-      WHERE "createdAtSource" IS NOT NULL
-      GROUP BY 1, 2
-      ORDER BY 1
-    `;
+  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+
+  const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
+    prisma.leadSourceRecord.findMany({
+      where: { ...baseWhere, ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      select: { createdAtSource: true },
+    }),
+    prisma.leadSourceRecord.findMany({
+      where: {
+        ...baseWhere,
+        ...(dateFilter ? { reportDate: dateFilter } : {}),
+        sourceSystem: "META",
+      },
+      select: { reportDate: true, createdAtSource: true, metaLeadCount: true },
+    }),
+    prisma.leadSourceRecord.findMany({
+      where: { ...baseWhere, ...dateWhere, sourceSystem: "GHL" },
+      select: { createdAtSource: true },
+    }),
+    prisma.leadSourceRecord.findMany({
+      where: { ...baseWhere, ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      select: { createdAtSource: true },
+    }),
+  ]);
+
+  const map = new Map<string, TimelineEntry>();
+
+  function getOrCreate(key: string): TimelineEntry {
+    if (!map.has(key)) map.set(key, {
+      date: key, websiteLeads: 0, metaLeads: 0, totalSource: 0,
+      ghlLeads: 0, zenotiLeads: 0, srcToGhlDiff: 0, ghlToZenotiDiff: 0,
+    });
+    return map.get(key)!;
   }
 
-  const map = new Map<string, Record<string, number>>();
+  for (const r of websiteRows) {
+    if (!r.createdAtSource) continue;
+    const key = getPeriodKey(r.createdAtSource, grouping, tz);
+    getOrCreate(key).websiteLeads++;
+  }
+  for (const r of metaRows) {
+    const d = r.reportDate ?? r.createdAtSource;
+    if (!d) continue;
+    const key = getPeriodKey(d, grouping, tz);
+    getOrCreate(key).metaLeads += r.metaLeadCount ?? 0;
+  }
+  for (const r of ghlRows) {
+    if (!r.createdAtSource) continue;
+    const key = getPeriodKey(r.createdAtSource, grouping, tz);
+    getOrCreate(key).ghlLeads++;
+  }
+  for (const r of zenotiRows) {
+    if (!r.createdAtSource) continue;
+    const key = getPeriodKey(r.createdAtSource, grouping, tz);
+    getOrCreate(key).zenotiLeads++;
+  }
+
+  const entries = Array.from(map.values())
+    .map((e) => ({
+      ...e,
+      totalSource: e.websiteLeads + e.metaLeads,
+      srcToGhlDiff: (e.websiteLeads + e.metaLeads) - e.ghlLeads,
+      ghlToZenotiDiff: e.ghlLeads - e.zenotiLeads,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  return entries;
+}
+
+// ─── Source Comparison ────────────────────────────────────────────────────────
+
+export async function getSourceComparison(
+  from?: string, to?: string,
+  grouping: DateGrouping = "daily",
+  tz: ReportingTimezone = "America/Toronto",
+  clinic?: string, service?: string
+): Promise<SourceComparisonRow[]> {
+  const timeline = await getLeadTimeline(from, to, grouping, tz, clinic, service);
+
+  return timeline.map((t) => {
+    const src = t.totalSource;
+    const status = computeAuditStatus(t.websiteLeads, t.metaLeads, t.ghlLeads, t.zenotiLeads);
+    const discrepancyLocation = computeDiscrepancyLocation(src, t.ghlLeads, t.zenotiLeads);
+
+    return {
+      period: periodLabel(t.date, grouping),
+      periodStart: t.date,
+      periodEnd: t.date,
+      websiteLeads: t.websiteLeads,
+      metaLeads: t.metaLeads,
+      totalSourceLeads: src,
+      ghlLeads: t.ghlLeads,
+      zenotiLeads: t.zenotiLeads,
+      srcToGhlDiff: t.srcToGhlDiff,
+      ghlToZenotiDiff: t.ghlToZenotiDiff,
+      srcToGhlMatchRate: pct(t.ghlLeads, src),
+      ghlToZenotiMatchRate: pct(t.zenotiLeads, t.ghlLeads),
+      discrepancyLocation,
+      status,
+    };
+  });
+}
+
+// ─── Source Comparison Drilldown ──────────────────────────────────────────────
+
+export async function getSourceComparisonDrilldown(
+  periodStart: string, periodEnd: string,
+  by: "clinic" | "service" | "websiteFormSource" | "campaign"
+) {
+  const dateFilter = buildDateFilter(periodStart, periodEnd);
+  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
+
+  let groupField: string;
+  if (by === "clinic") groupField = "clinicLocationNormalized";
+  else if (by === "service") groupField = "serviceNormalized";
+  else if (by === "websiteFormSource") groupField = "websiteFormSource";
+  else groupField = "campaignName";
+
+  const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
+    prisma.leadSourceRecord.groupBy({
+      by: [groupField as any],
+      where: { ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      _count: { id: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: [groupField as any],
+      where: { ...metaDateWhere, sourceSystem: "META" },
+      _sum: { metaLeadCount: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: [groupField as any],
+      where: { ...dateWhere, sourceSystem: "GHL" },
+      _count: { id: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: [groupField as any],
+      where: { ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      _count: { id: true },
+    }),
+  ]);
+
+  const labels = new Set<string>();
+  const wb: Record<string, number> = {};
+  const mb: Record<string, number> = {};
+  const gb: Record<string, number> = {};
+  const zb: Record<string, number> = {};
+
+  for (const r of websiteRows) {
+    const k = (r as any)[groupField] ?? "Unknown";
+    labels.add(k); wb[k] = r._count.id;
+  }
+  for (const r of metaRows) {
+    const k = (r as any)[groupField] ?? "Unknown";
+    labels.add(k); mb[k] = r._sum.metaLeadCount ?? 0;
+  }
+  for (const r of ghlRows) {
+    const k = (r as any)[groupField] ?? "Unknown";
+    labels.add(k); gb[k] = r._count.id;
+  }
+  for (const r of zenotiRows) {
+    const k = (r as any)[groupField] ?? "Unknown";
+    labels.add(k); zb[k] = r._count.id;
+  }
+
+  return Array.from(labels).map((label) => {
+    const web = wb[label] ?? 0;
+    const meta = mb[label] ?? 0;
+    const ghl = gb[label] ?? 0;
+    const zenoti = zb[label] ?? 0;
+    const src = web + meta;
+    return {
+      label,
+      websiteLeads: web,
+      metaLeads: meta,
+      totalSourceLeads: src,
+      ghlLeads: ghl,
+      zenotiLeads: zenoti,
+      srcToGhlDiff: src - ghl,
+      ghlToZenotiDiff: ghl - zenoti,
+      status: computeAuditStatus(web, meta, ghl, zenoti),
+    };
+  }).sort((a, b) => (b.totalSourceLeads + b.ghlLeads) - (a.totalSourceLeads + a.ghlLeads));
+}
+
+// ─── Clinic Breakdown ─────────────────────────────────────────────────────────
+
+export async function getClinicBreakdown(
+  from?: string, to?: string
+): Promise<ClinicBreakdownRow[]> {
+  const dateFilter = buildDateFilter(from, to);
+  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
+
+  const [websiteRows, metaRows, ghlRows, zenotiRows, dupeRows] = await Promise.all([
+    prisma.leadSourceRecord.groupBy({
+      by: ["clinicLocationNormalized"],
+      where: { ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      _count: { id: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["clinicLocationNormalized"],
+      where: { ...metaDateWhere, sourceSystem: "META" },
+      _sum: { metaLeadCount: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["clinicLocationNormalized"],
+      where: { ...dateWhere, sourceSystem: "GHL" },
+      _count: { id: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["clinicLocationNormalized"],
+      where: { ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      _count: { id: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["clinicLocationNormalized"],
+      where: { ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: true },
+      _count: { id: true },
+    }),
+  ]);
+
+  const clinics = new Set<string>();
+  const wb: Record<string, number> = {};
+  const mb: Record<string, number> = {};
+  const gb: Record<string, number> = {};
+  const zb: Record<string, number> = {};
+  const db: Record<string, number> = {};
+
+  for (const r of websiteRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); wb[k] = r._count.id; }
+  for (const r of metaRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); mb[k] = r._sum.metaLeadCount ?? 0; }
+  for (const r of ghlRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); gb[k] = r._count.id; }
+  for (const r of zenotiRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); zb[k] = r._count.id; }
+  for (const r of dupeRows) { const k = r.clinicLocationNormalized ?? "Unknown"; db[k] = r._count.id; }
+
+  return Array.from(clinics).map((clinic) => {
+    const web = wb[clinic] ?? 0;
+    const meta = mb[clinic] ?? 0;
+    const ghl = gb[clinic] ?? 0;
+    const zenoti = zb[clinic] ?? 0;
+    const src = web + meta;
+    return {
+      clinicLocation: clinic,
+      websiteLeads: web, metaLeads: meta, totalSourceLeads: src,
+      ghlLeads: ghl, zenotiLeads: zenoti,
+      duplicateCount: db[clinic] ?? 0,
+      srcToGhlDiff: src - ghl,
+      ghlToZenotiDiff: ghl - zenoti,
+      srcToGhlMatchRate: pct(ghl, src),
+      ghlToZenotiMatchRate: pct(zenoti, ghl),
+      unmappedServiceCount: 0,
+      discrepancyLocation: computeDiscrepancyLocation(src, ghl, zenoti),
+      status: computeAuditStatus(web, meta, ghl, zenoti),
+    };
+  }).sort((a, b) => b.totalSourceLeads - a.totalSourceLeads);
+}
+
+// ─── Service Breakdown ────────────────────────────────────────────────────────
+
+export async function getServiceBreakdown(
+  from?: string, to?: string, clinic?: string
+): Promise<ServiceBreakdownRow[]> {
+  const dateFilter = buildDateFilter(from, to);
+  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
+  const clinicWhere = clinic ? { clinicLocationNormalized: clinic } : {};
+
+  const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
+    prisma.leadSourceRecord.groupBy({
+      by: ["serviceNormalized"],
+      where: { ...dateWhere, ...clinicWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      _count: { id: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["serviceNormalized"],
+      where: { ...metaDateWhere, ...clinicWhere, sourceSystem: "META" },
+      _sum: { metaLeadCount: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["serviceNormalized"],
+      where: { ...dateWhere, ...clinicWhere, sourceSystem: "GHL" },
+      _count: { id: true },
+    }),
+    prisma.leadSourceRecord.groupBy({
+      by: ["serviceNormalized"],
+      where: { ...dateWhere, ...clinicWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      _count: { id: true },
+    }),
+  ]);
+
+  const services = new Set<string>();
+  const wb: Record<string, number> = {};
+  const mb: Record<string, number> = {};
+  const gb: Record<string, number> = {};
+  const zb: Record<string, number> = {};
+
+  for (const r of websiteRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); wb[k] = r._count.id; }
+  for (const r of metaRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); mb[k] = r._sum.metaLeadCount ?? 0; }
+  for (const r of ghlRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); gb[k] = r._count.id; }
+  for (const r of zenotiRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); zb[k] = r._count.id; }
+
+  return Array.from(services).map((service) => {
+    const web = wb[service] ?? 0;
+    const meta = mb[service] ?? 0;
+    const ghl = gb[service] ?? 0;
+    const zenoti = zb[service] ?? 0;
+    const src = web + meta;
+    return {
+      service, websiteLeads: web, metaLeads: meta, totalSourceLeads: src,
+      ghlLeads: ghl, zenotiLeads: zenoti,
+      srcToGhlDiff: src - ghl, ghlToZenotiDiff: ghl - zenoti,
+      srcToGhlMatchRate: pct(ghl, src),
+      ghlToZenotiMatchRate: pct(zenoti, ghl),
+      discrepancyLocation: computeDiscrepancyLocation(src, ghl, zenoti),
+      status: computeAuditStatus(web, meta, ghl, zenoti),
+    };
+  }).sort((a, b) => b.totalSourceLeads - a.totalSourceLeads);
+}
+
+// ─── Website Forms ────────────────────────────────────────────────────────────
+
+export async function getWebsiteForms(
+  from?: string, to?: string, clinic?: string, service?: string
+): Promise<WebsiteFormRow[]> {
+  const dateFilter = buildDateFilter(from, to);
+  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const extra = {
+    ...(clinic ? { clinicLocationNormalized: clinic } : {}),
+    ...(service ? { serviceNormalized: service } : {}),
+  };
+
+  const forms = await prisma.leadSourceRecord.groupBy({
+    by: ["formName", "websiteFormSource", "formId", "backendProvider", "pageUrl"],
+    where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE" },
+    _count: { id: true },
+    orderBy: { _count: { id: "desc" } },
+  });
+
+  const results: WebsiteFormRow[] = [];
+  for (const f of forms) {
+    if (!f.formName) continue;
+    const total = f._count.id;
+
+    const [unique, dupes, ghlMatches, zenotiMatches, lastSub] = await Promise.all([
+      prisma.leadSourceRecord.count({
+        where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE", formName: f.formName, isDuplicate: false },
+      }),
+      prisma.leadSourceRecord.count({
+        where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE", formName: f.formName, isDuplicate: true },
+      }),
+      prisma.leadSourceRecord.count({
+        where: {
+          ...dateWhere, ...extra, sourceSystem: "GHL",
+          normalizedPhone: { in: await getFormPhoneSet(f.formName, dateWhere, extra) },
+        },
+      }),
+      prisma.leadSourceRecord.count({
+        where: {
+          ...dateWhere, ...extra, sourceSystem: "ZENOTI", isAppointmentBased: false,
+          normalizedPhone: { in: await getFormPhoneSet(f.formName, dateWhere, extra) },
+        },
+      }),
+      prisma.leadSourceRecord.findFirst({
+        where: { ...dateWhere, sourceSystem: "WEBSITE", formName: f.formName },
+        orderBy: { createdAtSource: "desc" },
+        select: { createdAtSource: true },
+      }),
+    ]);
+
+    const websiteToGhlDiff = unique - ghlMatches;
+    const websiteToZenotiDiff = unique - zenotiMatches;
+
+    results.push({
+      id: f.formName,
+      formName: f.formName,
+      formId: f.formId,
+      websiteFormSource: f.websiteFormSource,
+      backendProvider: f.backendProvider,
+      pageUrl: f.pageUrl,
+      totalSubmissions: total,
+      uniqueLeads: unique,
+      duplicateCount: dupes,
+      ghlCount: ghlMatches,
+      zenotiCount: zenotiMatches,
+      websiteToGhlDiff,
+      websiteToZenotiDiff,
+      websiteToGhlMatchRate: pct(ghlMatches, unique) ?? 0,
+      websiteToZenotiMatchRate: pct(zenotiMatches, unique) ?? 0,
+      status: computeAuditStatus(unique, 0, ghlMatches, zenotiMatches),
+      lastSubmissionAt: lastSub?.createdAtSource?.toISOString() ?? null,
+    });
+  }
+
+  return results;
+}
+
+async function getFormPhoneSet(
+  formName: string, dateWhere: object, extra: object
+): Promise<string[]> {
+  const rows = await prisma.leadSourceRecord.findMany({
+    where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE", formName, isDuplicate: false },
+    select: { normalizedPhone: true, normalizedEmail: true },
+  });
+  return rows.map((r) => r.normalizedPhone ?? r.normalizedEmail ?? "").filter(Boolean);
+}
+
+// ─── Meta Breakdown ───────────────────────────────────────────────────────────
+
+export async function getMetaBreakdown(from?: string, to?: string) {
+  const dateFilter = buildDateFilter(from, to);
+  const dateWhere = dateFilter ? { reportDate: dateFilter } : {};
+
+  const rows = await prisma.leadSourceRecord.findMany({
+    where: { ...dateWhere, sourceSystem: "META" },
+    select: {
+      reportDate: true, createdAtSource: true,
+      campaignName: true, metaCampaignId: true,
+      metaAdSetName: true, metaAdSetId: true,
+      metaAdName: true, metaAdId: true,
+      metaObjective: true, metaConversionGoal: true, metaResultType: true,
+      metaResults: true, metaLeadCount: true,
+      spend: true, costPerResult: true,
+      impressions: true, clinicLocationNormalized: true, serviceNormalized: true,
+    },
+    orderBy: { reportDate: "desc" },
+  });
+
+  // Aggregate by campaign
+  const byCampaign = new Map<string, { leads: number; spend: number }>();
+  const byResultType = new Map<string, number>();
+  let totalLeads = 0;
+  let totalSpend = 0;
+
   for (const r of rows) {
-    const d = r.day.toISOString().slice(0, 10);
-    if (!map.has(d)) map.set(d, {});
-    map.get(d)![r.source] = Number(r.cnt);
+    const leads = r.metaLeadCount ?? 0;
+    const spend = r.spend ?? 0;
+    totalLeads += leads;
+    totalSpend += spend;
+
+    const camp = r.campaignName ?? "Unknown Campaign";
+    const existing = byCampaign.get(camp) ?? { leads: 0, spend: 0 };
+    byCampaign.set(camp, { leads: existing.leads + leads, spend: existing.spend + spend });
+
+    const rt = r.metaResultType ?? "Unknown";
+    byResultType.set(rt, (byResultType.get(rt) ?? 0) + leads);
   }
 
-  return Array.from(map.entries()).map(([date, bySrc]) => ({
-    date, wordpress: bySrc["WORDPRESS"] || 0, meta: bySrc["META"] || 0,
-    ghl: bySrc["GHL"] || 0, zenoti: bySrc["ZENOTI"] || 0,
-  }));
+  return {
+    rows,
+    totalLeads,
+    totalSpend,
+    byCampaign: Array.from(byCampaign.entries())
+      .map(([campaign, v]) => ({ campaign, ...v }))
+      .sort((a, b) => b.leads - a.leads),
+    byResultType: Array.from(byResultType.entries())
+      .map(([resultType, leads]) => ({ resultType, leads }))
+      .sort((a, b) => b.leads - a.leads),
+  };
 }
 
-export async function getImportHistory() {
-  return prisma.importBatch.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
-}
+// ─── Export helpers ───────────────────────────────────────────────────────────
 
-export async function getAllClinics() {
-  const rows = await prisma.leadSourceRecord.groupBy({
-    by: ["clinicLocationNormalized"],
-    _count: { id: true },
-    orderBy: { _count: { id: "desc" } },
-  });
-  return rows.map((r) => r.clinicLocationNormalized).filter(Boolean) as string[];
-}
-
-export async function getAllServices() {
-  const rows = await prisma.leadSourceRecord.groupBy({
-    by: ["serviceNormalized"],
-    _count: { id: true },
-    orderBy: { _count: { id: "desc" } },
-  });
-  return rows.map((r) => r.serviceNormalized).filter(Boolean) as string[];
-}
+export { buildDateFilter as buildDateFilterExport };

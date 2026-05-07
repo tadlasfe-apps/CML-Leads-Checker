@@ -1,11 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getWordPressForms } from "@/lib/data";
+import { NextResponse } from "next/server";
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = req.nextUrl;
-  const data = await getWordPressForms(
-    searchParams.get("from") || undefined,
-    searchParams.get("to") || undefined,
-  );
-  return NextResponse.json(data);
+// Deprecated — use /api/website-leads instead.
+export async function GET() {
+  return NextResponse.json([]);
 }

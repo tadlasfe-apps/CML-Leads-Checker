@@ -1,262 +1,136 @@
 import prisma from "./prisma";
-import { computeMatchScore, getMatchStatus, MATCH_THRESHOLD } from "./matching";
+import { normalizeClinicLocation, normalizeService, normalizeWebsiteFormSource,
+  inferWebsiteFormSource, loadMappingCaches, clearMappingCaches } from "./normalization";
 
-export async function runReconciliation(): Promise<{ matched: number; possible: number; unmatched: number }> {
-  // Load all leads grouped by source
-  const allLeads = await prisma.leadSourceRecord.findMany({
+export interface ReconciliationResult {
+  totalLeads: number;
+  duplicatesMarked: number;
+  appointmentBasedFlagged: number;
+}
+
+/**
+ * Re-apply clinic/service/form-source normalizations using current mapping tables.
+ */
+async function renormalizeLeads(): Promise<number> {
+  await loadMappingCaches();
+
+  const all = await prisma.leadSourceRecord.findMany({
     select: {
-      id: true,
+      id: true, clinicLocationRaw: true, serviceRaw: true,
+      formName: true, websiteFormSource: true, pageUrl: true,
       sourceSystem: true,
-      normalizedPhone: true,
-      normalizedEmail: true,
-      fullName: true,
-      clinicLocationNormalized: true,
-      serviceNormalized: true,
-      createdAtSource: true,
     },
   });
 
-  const wordpress = allLeads.filter((l) => l.sourceSystem === "WORDPRESS");
-  const meta = allLeads.filter((l) => l.sourceSystem === "META");
-  const ghl = allLeads.filter((l) => l.sourceSystem === "GHL");
-  const zenoti = allLeads.filter((l) => l.sourceSystem === "ZENOTI");
+  let updated = 0;
+  const batchSize = 200;
 
-  const sourceleads = [...wordpress, ...meta];
-  let matched = 0, possible = 0, unmatched = 0;
+  for (let i = 0; i < all.length; i += batchSize) {
+    const batch = all.slice(i, i + batchSize);
+    await Promise.all(batch.map(async (r) => {
+      const clinicNorm = normalizeClinicLocation(r.clinicLocationRaw || undefined);
+      const serviceNorm = normalizeService(r.serviceRaw || undefined);
 
-  // Clear existing matches
-  await prisma.leadMatch.deleteMany({});
+      let websiteFormSource = r.websiteFormSource;
+      if (r.sourceSystem === "WEBSITE" && !websiteFormSource) {
+        websiteFormSource = inferWebsiteFormSource(r.formName || undefined, r.pageUrl || undefined);
+      } else if (r.sourceSystem === "WEBSITE" && websiteFormSource) {
+        websiteFormSource = normalizeWebsiteFormSource(websiteFormSource);
+      }
 
-  const matchCreates: {
-    primaryLeadId: string;
-    matchedLeadId: string;
-    matchScore: number;
-    matchStatus: "MATCHED" | "POSSIBLE_MATCH" | "UNMATCHED" | "DUPLICATE" | "NEEDS_REVIEW";
-    matchReasons: { type: string };
-  }[] = [];
+      await prisma.leadSourceRecord.update({
+        where: { id: r.id },
+        data: {
+          clinicLocationNormalized: clinicNorm,
+          serviceNormalized: serviceNorm,
+          websiteFormSource: websiteFormSource ?? undefined,
+        },
+      });
+      updated++;
+    }));
+  }
 
-  // Match source leads → GHL
-  for (const src of sourceleads) {
-    let bestScore = 0;
-    let bestGhl = null;
+  clearMappingCaches();
+  return updated;
+}
 
-    for (const g of ghl) {
-      const { score } = computeMatchScore(src, g);
-      if (score > bestScore) {
-        bestScore = score;
-        bestGhl = g;
+/**
+ * Mark duplicate Website Leads within a 7-day window per clinic+service+formName.
+ */
+async function detectDuplicates(): Promise<number> {
+  // Reset all duplicate flags first
+  await prisma.leadSourceRecord.updateMany({
+    where: { sourceSystem: "WEBSITE" },
+    data: { isDuplicate: false },
+  });
+
+  const websiteLeads = await prisma.leadSourceRecord.findMany({
+    where: { sourceSystem: "WEBSITE" },
+    select: {
+      id: true, normalizedPhone: true, normalizedEmail: true,
+      clinicLocationNormalized: true, serviceNormalized: true,
+      websiteFormSource: true, formName: true, createdAtSource: true,
+    },
+    orderBy: { createdAtSource: "asc" },
+  });
+
+  let dupeCount = 0;
+  const seen = new Map<string, Date>();
+
+  for (const lead of websiteLeads) {
+    const identifier = lead.normalizedPhone || lead.normalizedEmail;
+    if (!identifier) continue;
+
+    const key = [
+      identifier,
+      lead.clinicLocationNormalized ?? "",
+      lead.serviceNormalized ?? "",
+      lead.formName ?? lead.websiteFormSource ?? "",
+    ].join("|");
+
+    const prevDate = seen.get(key);
+    const thisDate = lead.createdAtSource;
+
+    if (prevDate && thisDate) {
+      const diffMs = thisDate.getTime() - prevDate.getTime();
+      const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+      if (diffDays <= 7) {
+        await prisma.leadSourceRecord.update({
+          where: { id: lead.id },
+          data: { isDuplicate: true },
+        });
+        dupeCount++;
+        continue; // keep seen[key] as the original date
       }
     }
 
-    const status = getMatchStatus(bestScore);
-    if (bestGhl) {
-      matchCreates.push({
-        primaryLeadId: src.id,
-        matchedLeadId: bestGhl.id,
-        matchScore: bestScore,
-        matchStatus: status,
-        matchReasons: { type: "source_to_ghl" },
-      });
-    }
-
-    if (status === "MATCHED") matched++;
-    else if (status === "POSSIBLE_MATCH") possible++;
-    else unmatched++;
+    seen.set(key, thisDate ?? new Date());
   }
 
-  // Match GHL → Zenoti
-  for (const g of ghl) {
-    let bestScore = 0;
-    let bestZenoti = null;
-
-    for (const z of zenoti) {
-      const { score } = computeMatchScore(g, z);
-      if (score > bestScore) {
-        bestScore = score;
-        bestZenoti = z;
-      }
-    }
-
-    if (bestZenoti) {
-      matchCreates.push({
-        primaryLeadId: g.id,
-        matchedLeadId: bestZenoti.id,
-        matchScore: bestScore,
-        matchStatus: getMatchStatus(bestScore),
-        matchReasons: { type: "ghl_to_zenoti" },
-      });
-    }
-  }
-
-  // Batch insert matches (skip duplicates)
-  const seen = new Set<string>();
-  const deduped = matchCreates.filter((m) => {
-    const key = `${m.primaryLeadId}::${m.matchedLeadId}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  if (deduped.length > 0) {
-    await prisma.leadMatch.createMany({ data: deduped, skipDuplicates: true });
-  }
-
-  // Detect duplicates within same source
-  await detectDuplicates(wordpress, "WORDPRESS", 7);
-  await detectDuplicates(meta, "META", 7);
-
-  // Rebuild WordPress form summaries
-  await rebuildWordPressSummaries();
-
-  return { matched, possible, unmatched };
+  return dupeCount;
 }
 
-async function detectDuplicates(
-  leads: { id: string; normalizedPhone?: string | null; normalizedEmail?: string | null; createdAtSource?: Date | null; clinicLocationNormalized?: string | null; serviceNormalized?: string | null; fullName?: string | null }[],
-  _source: string,
-  windowDays: number
-) {
-  const windowMs = windowDays * 24 * 60 * 60 * 1000;
-  const duplicateIds = new Set<string>();
-
-  for (let i = 0; i < leads.length; i++) {
-    for (let j = i + 1; j < leads.length; j++) {
-      const a = leads[i], b = leads[j];
-      if (!a.normalizedPhone && !a.normalizedEmail) continue;
-
-      const phoneMatch = a.normalizedPhone && b.normalizedPhone && a.normalizedPhone === b.normalizedPhone;
-      const emailMatch = a.normalizedEmail && b.normalizedEmail && a.normalizedEmail === b.normalizedEmail;
-
-      if (!phoneMatch && !emailMatch) continue;
-
-      const withinWindow =
-        !a.createdAtSource ||
-        !b.createdAtSource ||
-        Math.abs(a.createdAtSource.getTime() - b.createdAtSource.getTime()) <= windowMs;
-
-      if (withinWindow) duplicateIds.add(b.id);
-    }
-  }
-
-  if (duplicateIds.size > 0) {
-    await prisma.leadSourceRecord.updateMany({
-      where: { id: { in: Array.from(duplicateIds) } },
-      data: { isDuplicate: true },
-    });
-  }
+/**
+ * Flag Zenoti records that appear to be appointment-based only.
+ */
+async function flagAppointmentBasedZenoti(): Promise<number> {
+  const result = await prisma.leadSourceRecord.updateMany({
+    where: {
+      sourceSystem: "ZENOTI",
+      isAppointmentBased: true,
+    },
+    data: { status: "Needs review: Zenoti source is appointment-based" },
+  });
+  return result.count;
 }
 
-async function rebuildWordPressSummaries() {
-  const forms = await prisma.leadSourceRecord.groupBy({
-    by: ["formName"],
-    where: { sourceSystem: "WORDPRESS", formName: { not: null } },
-    _count: { id: true },
-  });
+export async function runReconciliation(): Promise<ReconciliationResult> {
+  const totalLeads = await prisma.leadSourceRecord.count();
 
-  for (const f of forms) {
-    if (!f.formName) continue;
+  await renormalizeLeads();
+  const duplicatesMarked = await detectDuplicates();
+  const appointmentBasedFlagged = await flagAppointmentBasedZenoti();
 
-    const leads = await prisma.leadSourceRecord.findMany({
-      where: { sourceSystem: "WORDPRESS", formName: f.formName },
-      select: { id: true, isDuplicate: true, createdAtSource: true, pageUrl: true, formId: true, wordpressFormPlugin: true },
-    });
-
-    const ids = leads.map((l) => l.id);
-    const total = ids.length;
-    const dupes = leads.filter((l) => l.isDuplicate).length;
-    const unique = total - dupes;
-
-    const ghlMatches = await prisma.leadMatch.count({
-      where: {
-        primaryLeadId: { in: ids },
-        matchStatus: "MATCHED",
-        matchReasons: { path: ["type"], equals: "source_to_ghl" },
-      },
-    });
-
-    const ghlPossible = await prisma.leadMatch.count({
-      where: {
-        primaryLeadId: { in: ids },
-        matchStatus: "POSSIBLE_MATCH",
-        matchReasons: { path: ["type"], equals: "source_to_ghl" },
-      },
-    });
-
-    const ghlMatched = ghlMatches + ghlPossible;
-    const missingGhl = Math.max(0, unique - ghlMatched);
-
-    // For Zenoti, find GHL ids matched to this form's leads, then check Zenoti
-    const ghlMatchRecords = await prisma.leadMatch.findMany({
-      where: {
-        primaryLeadId: { in: ids },
-        matchStatus: { in: ["MATCHED", "POSSIBLE_MATCH"] },
-        matchReasons: { path: ["type"], equals: "source_to_ghl" },
-      },
-      select: { matchedLeadId: true },
-    });
-
-    const ghlIds = ghlMatchRecords.map((m) => m.matchedLeadId);
-    const zenotiMatched = ghlIds.length > 0
-      ? await prisma.leadMatch.count({
-          where: {
-            primaryLeadId: { in: ghlIds },
-            matchStatus: { in: ["MATCHED", "POSSIBLE_MATCH"] },
-          },
-        })
-      : 0;
-    const missingZenoti = Math.max(0, ghlIds.length - zenotiMatched);
-
-    const ghlRate = unique > 0 ? (ghlMatched / unique) * 100 : 0;
-    const zenotiRate = unique > 0 ? (zenotiMatched / unique) * 100 : 0;
-    const reconcRate = Math.min(ghlRate, zenotiRate);
-
-    let status: "HEALTHY" | "MINOR_DISCREPANCY" | "MAJOR_DISCREPANCY" | "MISSING_GHL" | "MISSING_ZENOTI" | "DUPLICATE_ISSUE" | "NEEDS_REVIEW" = "NEEDS_REVIEW";
-    const dupeRate = total > 0 ? (dupes / total) * 100 : 0;
-
-    if (dupeRate > 10) status = "DUPLICATE_ISSUE";
-    else if (missingGhl > 0) status = "MISSING_GHL";
-    else if (missingZenoti > 0) status = "MISSING_ZENOTI";
-    else if (reconcRate >= 95) status = "HEALTHY";
-    else if (reconcRate >= 85) status = "MINOR_DISCREPANCY";
-    else if (reconcRate < 85) status = "MAJOR_DISCREPANCY";
-
-    const lastLead = leads
-      .filter((l) => l.createdAtSource)
-      .sort((a, b) => (b.createdAtSource!.getTime() - a.createdAtSource!.getTime()))[0];
-
-    await prisma.wordPressFormSummary.upsert({
-      where: { id: f.formName },
-      create: {
-        id: f.formName,
-        formName: f.formName,
-        formId: leads[0]?.formId,
-        wordpressFormPlugin: leads[0]?.wordpressFormPlugin,
-        pageUrl: leads[0]?.pageUrl,
-        totalSubmissions: total,
-        uniqueLeads: unique,
-        duplicateSubmissions: dupes,
-        ghlMatchedCount: ghlMatched,
-        zenotiMatchedCount: zenotiMatched,
-        missingInGhlCount: missingGhl,
-        missingInZenotiCount: missingZenoti,
-        formToGhlReconciliationRate: ghlRate,
-        formToZenotiReconciliationRate: zenotiRate,
-        reconciliationStatus: status,
-        lastSubmissionAt: lastLead?.createdAtSource,
-      },
-      update: {
-        totalSubmissions: total,
-        uniqueLeads: unique,
-        duplicateSubmissions: dupes,
-        ghlMatchedCount: ghlMatched,
-        zenotiMatchedCount: zenotiMatched,
-        missingInGhlCount: missingGhl,
-        missingInZenotiCount: missingZenoti,
-        formToGhlReconciliationRate: ghlRate,
-        formToZenotiReconciliationRate: zenotiRate,
-        reconciliationStatus: status,
-        lastSubmissionAt: lastLead?.createdAtSource,
-      },
-    });
-  }
+  return { totalLeads, duplicatesMarked, appointmentBasedFlagged };
 }
