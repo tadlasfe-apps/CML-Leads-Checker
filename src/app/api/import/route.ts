@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
 import { parseCSV, type ParsedSourceSystem } from "@/lib/csv-parser";
 import prisma from "@/lib/prisma";

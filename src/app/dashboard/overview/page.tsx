@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TopBar } from "@/components/layout/TopBar";
 import { KPICard } from "@/components/dashboard/KPICard";
@@ -27,7 +27,7 @@ const COLORS = {
   source:  "#6366f1",
 };
 
-export default function OverviewPage() {
+function OverviewPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -307,5 +307,13 @@ export default function OverviewPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function OverviewPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-muted-foreground">Loading…</div>}>
+      <OverviewPageInner />
+    </Suspense>
   );
 }

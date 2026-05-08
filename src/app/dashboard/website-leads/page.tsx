@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TopBar } from "@/components/layout/TopBar";
 import { DateRangeFilter, getDateRangeFromPreset } from "@/components/dashboard/DateRangeFilter";
@@ -24,7 +24,7 @@ function RateCell({ rate }: { rate: number }) {
   return <span className={`font-semibold ${color}`}>{rate.toFixed(1)}%</span>;
 }
 
-export default function WebsiteLeadsPage() {
+function WebsiteLeadsPageInner() {
   const router      = useRouter();
   const sp          = useSearchParams();
 
@@ -235,5 +235,13 @@ export default function WebsiteLeadsPage() {
         </Card>
       </div>
     </div>
+  );
+}
+
+export default function WebsiteLeadsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-muted-foreground">Loading…</div>}>
+      <WebsiteLeadsPageInner />
+    </Suspense>
   );
 }
