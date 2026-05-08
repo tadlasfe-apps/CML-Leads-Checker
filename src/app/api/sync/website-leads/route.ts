@@ -6,21 +6,103 @@ import prisma from "@/lib/prisma";
 
 const GF_PAGE_SIZE = 100;
 
-function gfAuth(): string {
-  const ck = process.env.GRAVITY_FORMS_CONSUMER_KEY ?? "";
-  const cs = process.env.GRAVITY_FORMS_CONSUMER_SECRET ?? "";
-  return "Basic " + Buffer.from(`${ck}:${cs}`).toString("base64");
-}
+// ─── Auth helpers ─────────────────────────────────────────────────────────────
 
 function gfBase(): string {
   return (process.env.GRAVITY_FORMS_BASE_URL ?? "").replace(/\/$/, "");
 }
 
+function basicAuthHeader(): string {
+  const ck = process.env.GRAVITY_FORMS_CONSUMER_KEY ?? "";
+  const cs = process.env.GRAVITY_FORMS_CONSUMER_SECRET ?? "";
+  return "Basic " + Buffer.from(`${ck}:${cs}`).toString("base64");
+}
+
+function appendQsAuth(url: string): string {
+  const ck = encodeURIComponent(process.env.GRAVITY_FORMS_CONSUMER_KEY ?? "");
+  const cs = encodeURIComponent(process.env.GRAVITY_FORMS_CONSUMER_SECRET ?? "");
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}consumer_key=${ck}&consumer_secret=${cs}`;
+}
+
+// ─── Auth-aware fetch with fallback ──────────────────────────────────────────
+//
+// Tries Basic Auth first. If the server returns 401 or 403, retries the same
+// URL using query-string credentials instead. Throws a descriptive error if
+// both methods fail, without leaking key/secret values into the message.
+
+async function gfFetch(url: string): Promise<any> {
+  // --- attempt 1: Basic Auth header ---
+  let res: Response;
+  let basicStatus = 0;
+  let basicBody   = "";
+
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: basicAuthHeader(), Accept: "application/json" },
+      cache: "no-store",
+    });
+    basicStatus = res.status;
+  } catch (err: any) {
+    const cause = err?.cause;
+    const detail = cause ? ` (${cause?.code ?? cause?.message ?? String(cause)})` : "";
+    throw new Error(`Network error reaching Gravity Forms API: ${err?.message ?? "Unknown"}${detail}`);
+  }
+
+  if (basicStatus !== 401 && basicStatus !== 403) {
+    // Success or a non-auth error — handle here
+    if (!res!.ok) {
+      basicBody = await res!.text().catch(() => "");
+      throw new Error(
+        `Gravity Forms API error ${basicStatus} (Basic Auth): ${basicBody.slice(0, 300)}`,
+      );
+    }
+    return res!.json();
+  }
+
+  // Basic Auth was rejected — capture body for diagnostics
+  basicBody = await res!.text().catch(() => "");
+
+  // --- attempt 2: query-string credentials ---
+  const qsUrl = appendQsAuth(url);
+  let qsRes: Response;
+  let qsStatus = 0;
+  let qsBody   = "";
+
+  try {
+    qsRes = await fetch(qsUrl, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    qsStatus = qsRes.status;
+  } catch (err: any) {
+    const cause = err?.cause;
+    const detail = cause ? ` (${cause?.code ?? cause?.message ?? String(cause)})` : "";
+    throw new Error(
+      `Basic Auth returned ${basicStatus}. ` +
+      `Query-string auth also failed with a network error: ${err?.message ?? "Unknown"}${detail}`,
+    );
+  }
+
+  if (!qsRes!.ok) {
+    qsBody = await qsRes!.text().catch(() => "");
+    throw new Error(
+      `Gravity Forms auth failed with both methods. ` +
+      `Basic Auth: ${basicStatus} — "${basicBody.slice(0, 150)}". ` +
+      `Query-string auth: ${qsStatus} — "${qsBody.slice(0, 150)}". ` +
+      `Check that the API key belongs to a user with permission to read entries and that the Gravity Forms REST API is enabled.`,
+    );
+  }
+
+  return qsRes!.json();
+}
+
+// ─── Paginated entries fetch ──────────────────────────────────────────────────
+
 async function fetchAllEntries(from: string, to: string): Promise<any[]> {
-  const auth = gfAuth();
-  const base = gfBase();
+  const base    = gfBase();
   const entries: any[] = [];
-  let page = 1;
+  let page  = 1;
   let total: number | null = null;
 
   while (true) {
@@ -32,27 +114,7 @@ async function fetchAllEntries(from: string, to: string): Promise<any[]> {
       `&paging[current_page]=${page}` +
       `&search=${encodeURIComponent(search)}`;
 
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        headers: { Authorization: auth, Accept: "application/json" },
-        cache: "no-store",
-      });
-    } catch (err: any) {
-      const cause = err?.cause;
-      const detail = cause ? ` (${cause?.code ?? cause?.message ?? String(cause)})` : "";
-      throw new Error(`Network error reaching Gravity Forms API: ${err?.message ?? "Unknown"}${detail}`);
-    }
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      if (res.status === 401 || res.status === 403) {
-        throw new Error(`Gravity Forms API returned ${res.status}: check GRAVITY_FORMS_CONSUMER_KEY and GRAVITY_FORMS_CONSUMER_SECRET.`);
-      }
-      throw new Error(`Gravity Forms API error ${res.status}: ${body.slice(0, 200)}`);
-    }
-
-    const json = await res.json();
+    const json  = await gfFetch(url);
     const batch: any[] = json.entries ?? [];
     entries.push(...batch);
 
@@ -64,34 +126,49 @@ async function fetchAllEntries(from: string, to: string): Promise<any[]> {
   return entries;
 }
 
-function labelField(entry: any, labels: Record<string, string>, ...keywords: string[]): string | undefined {
+// ─── Field extractor ─────────────────────────────────────────────────────────
+
+function labelField(
+  entry: any,
+  labels: Record<string, string>,
+  ...keywords: string[]
+): string | undefined {
   for (const [fieldId, label] of Object.entries(labels)) {
     const lowerLabel = (label as string).toLowerCase();
     if (keywords.some((kw) => lowerLabel.includes(kw))) {
       const val = entry[fieldId];
-      if (val !== undefined && val !== null && String(val).trim() !== "") return String(val).trim();
+      if (val !== undefined && val !== null && String(val).trim() !== "")
+        return String(val).trim();
     }
   }
   return undefined;
 }
 
+// ─── Route handler ────────────────────────────────────────────────────────────
+
 export async function POST(req: NextRequest) {
   const baseUrl = process.env.GRAVITY_FORMS_BASE_URL;
-  const ck = process.env.GRAVITY_FORMS_CONSUMER_KEY;
-  const cs = process.env.GRAVITY_FORMS_CONSUMER_SECRET;
+  const ck      = process.env.GRAVITY_FORMS_CONSUMER_KEY;
+  const cs      = process.env.GRAVITY_FORMS_CONSUMER_SECRET;
 
   if (!baseUrl || !ck || !cs) {
     return NextResponse.json(
-      { error: "Missing credentials: GRAVITY_FORMS_BASE_URL, GRAVITY_FORMS_CONSUMER_KEY, and GRAVITY_FORMS_CONSUMER_SECRET must be set in .env" },
-      { status: 200 }
+      {
+        error:
+          "Missing credentials: GRAVITY_FORMS_BASE_URL, GRAVITY_FORMS_CONSUMER_KEY, " +
+          "and GRAVITY_FORMS_CONSUMER_SECRET must be set in .env",
+      },
+      { status: 200 },
     );
   }
 
   let body: any;
   try { body = await req.json(); } catch { body = {}; }
 
-  const from: string = body.from ?? new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
-  const to: string   = body.to   ?? new Date().toISOString().slice(0, 10);
+  const from: string =
+    body.from ?? new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+  const to: string =
+    body.to ?? new Date().toISOString().slice(0, 10);
 
   const syncRun = await prisma.syncRun.create({
     data: {
@@ -132,9 +209,10 @@ export async function POST(req: NextRequest) {
         createdAtSource: createdAt,
         firstName,
         lastName,
-        fullName: firstName && lastName
-          ? `${firstName} ${lastName}`.trim()
-          : firstName ?? lastName,
+        fullName:
+          firstName && lastName
+            ? `${firstName} ${lastName}`.trim()
+            : firstName ?? lastName,
         email,
         phone,
         clinicLocationRaw: clinic,
@@ -149,7 +227,7 @@ export async function POST(req: NextRequest) {
 
     const BATCH = 100;
     for (let i = 0; i < records.length; i += BATCH) {
-      const batch = records.slice(i, i + BATCH);
+      const batch  = records.slice(i, i + BATCH);
       const result = await prisma.leadSourceRecord.createMany({
         data: batch,
         skipDuplicates: true,
@@ -187,7 +265,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(
       { error: err?.message ?? "Website leads pull failed", syncRunId: syncRun.id },
-      { status: 200 }
+      { status: 200 },
     );
   }
 }

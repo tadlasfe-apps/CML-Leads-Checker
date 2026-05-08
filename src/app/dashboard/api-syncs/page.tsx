@@ -117,132 +117,382 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
   );
 }
 
-// ─── API Pull section (inside each card) ─────────────────────────────────────
+// ─── Shared date-range inputs ─────────────────────────────────────────────────
 
-interface PullState {
-  loading: boolean;
-  from: string;
-  to: string;
-  result: { fetched: number; created: number; skipped: number } | null;
-  error: string | null;
+function DateRangeInputs({
+  from, to,
+  onFrom, onTo,
+}: {
+  from: string; to: string;
+  onFrom: (v: string) => void; onTo: (v: string) => void;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+        <span>From</span>
+        <input
+          type="date" value={from} max={to}
+          onChange={(e) => onFrom(e.target.value)}
+          className="border rounded px-1.5 py-0.5 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+      </div>
+      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+        <span>To</span>
+        <input
+          type="date" value={to} min={from} max={todayStr()}
+          onChange={(e) => onTo(e.target.value)}
+          className="border rounded px-1.5 py-0.5 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+      </div>
+    </>
+  );
 }
 
+// ─── Not-configured notice ────────────────────────────────────────────────────
+
+function NotConfigured({ reason }: { reason: string }) {
+  return (
+    <div className="border-t pt-3 mt-3">
+      <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+        <Info className="w-3.5 h-3.5 shrink-0" />
+        {reason}
+      </p>
+    </div>
+  );
+}
+
+// ─── Generic API pull section (WEBSITE, META) ─────────────────────────────────
+
 function ApiPullSection({
-  sourceKey,
-  apiLabel,
-  endpoint,
-  configured,
-  notConfiguredReason,
-  onComplete,
+  apiLabel, endpoint, configured, notConfiguredReason, onComplete,
 }: {
-  sourceKey: SourceKey;
-  apiLabel: string;
-  endpoint: string;
-  configured: boolean;
-  notConfiguredReason?: string;
+  apiLabel: string; endpoint: string;
+  configured: boolean; notConfiguredReason?: string;
   onComplete: () => void;
 }) {
-  const [state, setState] = useState<PullState>({
-    loading: false,
-    from: sevenDaysAgoStr(),
-    to: todayStr(),
-    result: null,
-    error: null,
-  });
+  const [loading, setLoading] = useState(false);
+  const [from,    setFrom]    = useState(sevenDaysAgoStr);
+  const [to,      setTo]      = useState(todayStr);
+  const [result,  setResult]  = useState<{ fetched: number; created: number; skipped: number } | null>(null);
+  const [error,   setError]   = useState<string | null>(null);
 
   async function runPull() {
-    setState((s) => ({ ...s, loading: true, result: null, error: null }));
+    setLoading(true); setResult(null); setError(null);
     try {
       const res  = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from: state.from, to: state.to }),
+        body: JSON.stringify({ from, to }),
       });
       const json = await res.json();
-      if (json.error) {
-        setState((s) => ({ ...s, loading: false, error: json.error }));
-      } else {
-        setState((s) => ({
-          ...s,
-          loading: false,
-          result: {
-            fetched: json.fetched ?? json.rowsFetched ?? 0,
-            created: json.created ?? json.recordsCreated ?? 0,
-            skipped: json.skipped ?? json.recordsSkipped ?? 0,
-          },
-        }));
+      if (json.error) { setError(json.error); }
+      else {
+        setResult({
+          fetched: json.fetched ?? json.rowsFetched ?? 0,
+          created: json.created ?? json.recordsCreated ?? 0,
+          skipped: json.skipped ?? json.recordsSkipped ?? 0,
+        });
         onComplete();
       }
-    } catch (err: any) {
-      setState((s) => ({ ...s, loading: false, error: err?.message ?? "Unexpected error" }));
-    }
+    } catch (err: any) { setError(err?.message ?? "Unexpected error"); }
+    setLoading(false);
   }
 
-  if (!configured) {
-    return (
-      <div className="border-t pt-3 mt-3">
-        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-          <Info className="w-3.5 h-3.5 shrink-0" />
-          {notConfiguredReason ?? "Configure credentials in .env to enable API pulls."}
-        </p>
-      </div>
-    );
-  }
+  if (!configured) return <NotConfigured reason={notConfiguredReason ?? "Configure credentials in .env to enable API pulls."} />;
 
   return (
     <div className="border-t pt-3 mt-3 space-y-2">
       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">API Pull</p>
       <div className="flex items-center gap-2 flex-wrap">
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <span>From</span>
-          <input
-            type="date"
-            value={state.from}
-            max={state.to}
-            onChange={(e) => setState((s) => ({ ...s, from: e.target.value }))}
-            className="border rounded px-1.5 py-0.5 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <span>To</span>
-          <input
-            type="date"
-            value={state.to}
-            min={state.from}
-            max={todayStr()}
-            onChange={(e) => setState((s) => ({ ...s, to: e.target.value }))}
-            className="border rounded px-1.5 py-0.5 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={runPull}
-          disabled={state.loading}
-          className="flex items-center gap-1.5 text-xs h-7"
-        >
-          {state.loading
-            ? <><Loader2 className="w-3 h-3 animate-spin" /> Pulling…</>
-            : <><Download className="w-3 h-3" /> {apiLabel}</>}
+        <DateRangeInputs from={from} to={to} onFrom={setFrom} onTo={setTo} />
+        <Button size="sm" variant="outline" onClick={runPull} disabled={loading} className="flex items-center gap-1.5 text-xs h-7">
+          {loading ? <><Loader2 className="w-3 h-3 animate-spin" /> Pulling…</> : <><Download className="w-3 h-3" /> {apiLabel}</>}
         </Button>
       </div>
-
-      {state.error && (
+      {error && (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 flex items-start gap-2">
           <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
-          <p className="text-xs text-red-700">{state.error}</p>
+          <p className="text-xs text-red-700">{error}</p>
         </div>
       )}
-
-      {state.result && (
+      {result && (
         <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 flex items-center gap-3 flex-wrap">
           <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0" />
           <span className="text-xs text-green-800">
-            Pulled <strong>{state.result.fetched}</strong> records —{" "}
-            <strong className="text-green-700">{state.result.created}</strong> added,{" "}
-            <span className="text-muted-foreground">{state.result.skipped} skipped</span>
+            Pulled <strong>{result.fetched}</strong> records —{" "}
+            <strong className="text-green-700">{result.created}</strong> added,{" "}
+            <span className="text-muted-foreground">{result.skipped} skipped</span>
           </span>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── GHL pull section (with date basis + full diagnostics) ────────────────────
+
+type DateBasis = "opportunityCreatedDate" | "opportunityUpdatedDate" | "contactCreatedDate";
+
+const DATE_BASIS_OPTIONS: { value: DateBasis; label: string }[] = [
+  { value: "opportunityCreatedDate", label: "Opportunity created date (default)" },
+  { value: "opportunityUpdatedDate", label: "Opportunity updated date" },
+  { value: "contactCreatedDate",     label: "Contact created date" },
+];
+
+function GhlDiagPanel({ diag, rateLimited }: { diag: any; rateLimited?: boolean }) {
+  const rows: [string, React.ReactNode][] = [
+    ["Endpoint used",              <code className="text-xs font-mono">{diag.endpoint}</code>],
+    ["Method used",                diag.method ?? "—"],
+    ["Location ID",                diag.locationId],
+    ["Pipeline ID",                diag.pipelineId],
+    ["Date range",                 `${diag.dateRange?.from} → ${diag.dateRange?.to}`],
+    ["Date basis",                 diag.dateBasis],
+    ["Pages requested",            diag.pagesRequested],
+    ["API status codes",           (diag.apiStatusCodes ?? []).join(", ") || "—"],
+    ["API response summary",       diag.responseSummary || "—"],
+    ["Records fetched (total)",    <strong>{diag.recordsFetchedTotal}</strong>],
+    ["After pipeline filter",      diag.recordsAfterPipelineFilter],
+    ["After date filter",          diag.recordsAfterDateFilter],
+    ["Created",                    <strong className="text-green-700">{diag.recordsCreated}</strong>],
+    ["Skipped (already exist)",    diag.recordsSkipped],
+  ];
+
+  const strategies: any[] = diag.strategies ?? [];
+
+  return (
+    <div className="space-y-2 mt-2">
+      {rateLimited && (
+        <div className="rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 flex items-start gap-2">
+          <Info className="w-3.5 h-3.5 text-yellow-600 mt-0.5 shrink-0" />
+          <p className="text-xs text-yellow-800">Rate limited (429) after retries — results are partial.</p>
+        </div>
+      )}
+      {(diag.warnings ?? []).map((w: string, i: number) => (
+        <div key={i} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
+          <Info className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+          <p className="text-xs text-amber-800">{w}</p>
+        </div>
+      ))}
+
+      {/* Per-strategy results */}
+      {strategies.length > 0 && (
+        <div className="rounded-md border bg-muted/30 overflow-hidden">
+          <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b uppercase tracking-wide">
+            Strategy attempts
+          </p>
+          <div className="divide-y">
+            {strategies.map((s: any) => (
+              <div key={s.strategy} className="px-3 py-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${s.succeeded ? "bg-green-100 text-green-800" : "bg-red-100 text-red-700"}`}>
+                    Strategy {s.strategy}
+                  </span>
+                  <span className="text-xs font-mono text-muted-foreground">{s.method}</span>
+                  <code className="text-xs font-mono text-muted-foreground truncate max-w-[260px]">{s.endpoint}</code>
+                  {s.timedOut && (
+                    <span className="text-xs text-orange-700 font-medium">TIMED OUT</span>
+                  )}
+                  {s.statusCode !== null && (
+                    <span className="text-xs tabular-nums text-muted-foreground">HTTP {s.statusCode}</span>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  <span className="font-medium">Params: </span>
+                  <code className="font-mono">{JSON.stringify(s.requestParams)}</code>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  <span className="font-medium">Response: </span>
+                  <span className={s.succeeded ? "text-green-700" : "text-red-600"}>{s.responseText || "—"}</span>
+                </div>
+                {s.errorMessage && !s.succeeded && (
+                  <div className="text-xs text-red-600">
+                    <span className="font-medium">Error: </span>{s.errorMessage}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-md border bg-muted/30 overflow-hidden">
+        <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b uppercase tracking-wide">
+          Diagnostics
+        </p>
+        <div className="divide-y">
+          {rows.map(([label, val]) => (
+            <div key={label} className="flex items-start gap-2 px-3 py-1.5 text-xs">
+              <span className="text-muted-foreground w-44 shrink-0">{label}</span>
+              <span className="flex-1 min-w-0 break-all">{val}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GhlPullSection({
+  configured, notConfiguredReason, onComplete,
+}: {
+  configured: boolean; notConfiguredReason?: string; onComplete: () => void;
+}) {
+  const [loading,     setLoading]     = useState(false);
+  const [testLoading, setTestLoading] = useState(false);
+  const [from,        setFrom]        = useState(sevenDaysAgoStr);
+  const [to,          setTo]          = useState(todayStr);
+  const [dateBasis,   setDateBasis]   = useState<DateBasis>("opportunityCreatedDate");
+  const [diag,         setDiag]         = useState<any | null>(null);
+  const [sample,       setSample]       = useState<any[] | null>(null);
+  const [rateLimited,  setRateLimited]  = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
+  const [hint,         setHint]         = useState<string | null>(null);
+  const [strategyUsed, setStrategyUsed] = useState<string | null>(null);
+
+  async function callApi(extraBody: Record<string, any>, isTest: boolean) {
+    const setter = isTest ? setTestLoading : setLoading;
+    setter(true);
+    setDiag(null);
+    setSample(null);
+    setError(null);
+    setHint(null);
+    setStrategyUsed(null);
+    setRateLimited(false);
+    try {
+      const res  = await fetch("/api/sync/ghl", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ from, to, dateBasis, ...extraBody }),
+      });
+      const json = await res.json();
+      if (json.diag)         setDiag(json.diag);
+      if (json.sample)       setSample(json.sample);
+      if (json.hint)         setHint(json.hint);
+      if (json.strategyUsed) setStrategyUsed(json.strategyUsed);
+      if (json.error)        setError(json.error);
+      else {
+        setRateLimited(!!json.rateLimited);
+        if (!isTest) onComplete();
+      }
+    } catch (err: any) { setError(err?.message ?? "Unexpected error"); }
+    setter(false);
+  }
+
+  if (!configured) return <NotConfigured reason={notConfiguredReason ?? "Configure GHL credentials in .env."} />;
+
+  const anyLoading = loading || testLoading;
+
+  return (
+    <div className="border-t pt-3 mt-3 space-y-2">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">API Pull</p>
+
+      {/* Date range */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <DateRangeInputs from={from} to={to} onFrom={setFrom} onTo={setTo} />
+      </div>
+
+      {/* Date basis + action buttons */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <label className="text-xs text-muted-foreground shrink-0">Date basis</label>
+        <select
+          value={dateBasis}
+          onChange={(e) => setDateBasis(e.target.value as DateBasis)}
+          disabled={anyLoading}
+          className="border rounded px-1.5 py-0.5 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          {DATE_BASIS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Test pull — 20 records, no DB write */}
+        <Button
+          size="sm" variant="outline"
+          onClick={() => callApi({ test: true }, true)}
+          disabled={anyLoading}
+          className="flex items-center gap-1.5 text-xs h-7 border-amber-400 text-amber-700 hover:bg-amber-50"
+        >
+          {testLoading
+            ? <><Loader2 className="w-3 h-3 animate-spin" /> Testing…</>
+            : <><Search className="w-3 h-3" /> Test GHL Pull</>}
+        </Button>
+
+        {/* Full pull */}
+        <Button
+          size="sm" variant="outline"
+          onClick={() => callApi({}, false)}
+          disabled={anyLoading}
+          className="flex items-center gap-1.5 text-xs h-7"
+        >
+          {loading
+            ? <><Loader2 className="w-3 h-3 animate-spin" /> Pulling…</>
+            : <><Download className="w-3 h-3" /> Pull via GHL API</>}
+        </Button>
+      </div>
+
+      {/* Labels */}
+      <p className="text-xs text-muted-foreground">
+        <span className="text-amber-700 font-medium">Test GHL Pull</span> — fetches up to 20 records, no date filter, nothing saved.{" "}
+        <span className="font-medium">Pull via GHL API</span> — full pull with date filter, saves to checker.
+      </p>
+
+      {strategyUsed && !error && (
+        <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 flex items-start gap-2">
+          <CheckCircle2 className="w-3.5 h-3.5 text-green-600 mt-0.5 shrink-0" />
+          <p className="text-xs text-green-800">
+            Connected via <strong>Strategy {strategyUsed}</strong>{" "}
+            ({strategyUsed === "A" ? "POST /opportunities/search" : "GET /opportunities/search"})
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 space-y-1">
+          <div className="flex items-start gap-2">
+            <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
+            <p className="text-xs text-red-700">{error}</p>
+          </div>
+          {hint && (
+            <p className="text-xs text-red-600 ml-5">{hint}</p>
+          )}
+        </div>
+      )}
+
+      {diag && <GhlDiagPanel diag={diag} rateLimited={rateLimited} />}
+
+      {/* Sample records from test pull */}
+      {sample && sample.length > 0 && (
+        <div className="rounded-md border overflow-hidden">
+          <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b bg-muted/30 uppercase tracking-wide">
+            Sample records ({sample.length} shown)
+          </p>
+          <div className="divide-y">
+            {sample.map((s: any, i: number) => (
+              <div key={i} className="px-3 py-2 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
+                <span className="text-muted-foreground">ID</span>
+                <code className="font-mono truncate">{s.id ?? "—"}</code>
+                <span className="text-muted-foreground">Name</span>
+                <span>{s.name ?? "—"}</span>
+                <span className="text-muted-foreground">Stage</span>
+                <span>{s.stageName ?? "—"}</span>
+                <span className="text-muted-foreground">Status</span>
+                <span>{s.status ?? "—"}</span>
+                <span className="text-muted-foreground">Created at</span>
+                <span>{s.createdAt ? String(s.createdAt).slice(0, 19).replace("T", " ") : "—"}</span>
+                <span className="text-muted-foreground">Pipeline ID</span>
+                <code className="font-mono truncate text-xs">{s.pipelineId ?? "—"}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {sample && sample.length === 0 && (
+        <p className="text-xs text-muted-foreground px-1">
+          Test returned 0 records. The pipeline may be empty, or the API key may lack read access.
+        </p>
       )}
     </div>
   );
@@ -584,9 +834,15 @@ export default function DataPullsPage() {
                   </Button>
 
                   {/* API pull section */}
-                  {cfg.hasApi && cfg.apiEndpoint && cfg.apiLabel && (
+                  {src === "GHL" && (
+                    <GhlPullSection
+                      configured={apiConfigured(src)}
+                      notConfiguredReason={notConfiguredReason(src)}
+                      onComplete={fetchData}
+                    />
+                  )}
+                  {src !== "GHL" && cfg.hasApi && cfg.apiEndpoint && cfg.apiLabel && (
                     <ApiPullSection
-                      sourceKey={src}
                       apiLabel={cfg.apiLabel}
                       endpoint={cfg.apiEndpoint}
                       configured={apiConfigured(src)}
