@@ -59,7 +59,7 @@ export default function ServiceBreakdownPage() {
   }
 
   const filtered = data
-    .filter((r) => !search || r.service?.toLowerCase().includes(search.toLowerCase()))
+    .filter((r) => !search || (r.service ?? "").toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
       const av = (a as any)[sortField] ?? 0; const bv = (b as any)[sortField] ?? 0;
       return (av > bv ? 1 : av < bv ? -1 : 0) * (sortDir === "asc" ? 1 : -1);

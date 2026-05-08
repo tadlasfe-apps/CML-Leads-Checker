@@ -243,3 +243,7 @@ export function isUnmappedClinic(value: string): boolean {
 export function isUnmappedService(value: string): boolean {
   return value === "Other" || value === "";
 }
+
+export function safeLocaleCompare(a: unknown, b: unknown): number {
+  return toSafeString(a).localeCompare(toSafeString(b));
+}

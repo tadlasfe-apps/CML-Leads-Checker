@@ -174,7 +174,10 @@ function ApiPullSection({
   const [loading, setLoading] = useState(false);
   const [from,    setFrom]    = useState(sevenDaysAgoStr);
   const [to,      setTo]      = useState(todayStr);
-  const [result,  setResult]  = useState<{ fetched: number; created: number; skipped: number } | null>(null);
+  const [result,  setResult]  = useState<{
+    fetched: number; created: number; skipped: number;
+    warning?: string; step?: string; partialSuccess?: boolean;
+  } | null>(null);
   const [error,   setError]   = useState<string | null>(null);
 
   async function runPull() {
@@ -186,12 +189,16 @@ function ApiPullSection({
         body: JSON.stringify({ from, to }),
       });
       const json = await res.json();
-      if (json.error) { setError(json.error); }
-      else {
+      if (json.error && !json.partialSuccess) {
+        setError(json.details ?? json.error ?? "Unknown error");
+      } else {
         setResult({
-          fetched: json.fetched ?? json.rowsFetched ?? 0,
-          created: json.created ?? json.recordsCreated ?? 0,
-          skipped: json.skipped ?? json.recordsSkipped ?? 0,
+          fetched:        json.fetched ?? json.rowsFetched ?? 0,
+          created:        json.created ?? json.recordsCreated ?? 0,
+          skipped:        json.skipped ?? json.recordsSkipped ?? 0,
+          warning:        json.warning ?? undefined,
+          step:           json.step ?? undefined,
+          partialSuccess: !!json.partialSuccess,
         });
         onComplete();
       }
@@ -200,6 +207,8 @@ function ApiPullSection({
   }
 
   if (!configured) return <NotConfigured reason={notConfiguredReason ?? "Configure credentials in .env to enable API pulls."} />;
+
+  const isPartial = result?.partialSuccess;
 
   return (
     <div className="border-t pt-3 mt-3 space-y-2">
@@ -217,13 +226,23 @@ function ApiPullSection({
         </div>
       )}
       {result && (
-        <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 flex items-center gap-3 flex-wrap">
-          <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0" />
-          <span className="text-xs text-green-800">
+        <div className={`rounded-md border ${isPartial ? "border-amber-200 bg-amber-50" : "border-green-200 bg-green-50"} px-3 py-2 flex items-center gap-3 flex-wrap`}>
+          <CheckCircle2 className={`w-3.5 h-3.5 ${isPartial ? "text-amber-600" : "text-green-600"} shrink-0`} />
+          <span className={`text-xs ${isPartial ? "text-amber-800" : "text-green-800"}`}>
             Pulled <strong>{result.fetched}</strong> records —{" "}
-            <strong className="text-green-700">{result.created}</strong> added,{" "}
+            <strong className={isPartial ? "text-amber-700" : "text-green-700"}>{result.created}</strong> added,{" "}
             <span className="text-muted-foreground">{result.skipped} skipped</span>
+            {isPartial && <span className="ml-1 font-medium">— with post-processing warning</span>}
           </span>
+        </div>
+      )}
+      {result?.warning && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
+          <Info className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+          <div className="text-xs text-amber-800 space-y-0.5">
+            <p className="font-medium">Post-processing warning{result.step ? ` (step: ${result.step})` : ""}</p>
+            <p>{result.warning}</p>
+          </div>
         </div>
       )}
     </div>

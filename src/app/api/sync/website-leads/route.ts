@@ -228,19 +228,19 @@ function parseEntry(entry: any): {
       labelFieldAny(entry, labels, "full name", "fullname", "name") ??
       ([firstName, lastName].filter(Boolean).join(" ") || undefined);
   } catch (e: any) {
-    errors.push({ entryId, formId, field: "name", message: e?.message ?? "name parse error" });
+    errors.push({ entryId, formId, field: "name", message: toSafeString(e?.message) || "name parse error" });
   }
 
   try {
     email = labelFieldAny(entry, labels, "email", "e-mail");
   } catch (e: any) {
-    errors.push({ entryId, formId, field: "email", message: e?.message ?? "email parse error" });
+    errors.push({ entryId, formId, field: "email", message: toSafeString(e?.message) || "email parse error" });
   }
 
   try {
     phone = labelFieldAny(entry, labels, "phone", "mobile", "telephone", "tel", "cell");
   } catch (e: any) {
-    errors.push({ entryId, formId, field: "phone", message: e?.message ?? "phone parse error" });
+    errors.push({ entryId, formId, field: "phone", message: toSafeString(e?.message) || "phone parse error" });
   }
 
   // ── Clinic / service ──────────────────────────────────────────────────────
@@ -251,13 +251,13 @@ function parseEntry(entry: any): {
   try {
     clinicRaw = labelFieldAny(entry, labels, "clinic", "location", "branch", "centre", "center");
   } catch (e: any) {
-    errors.push({ entryId, formId, field: "clinic", message: e?.message ?? "clinic parse error" });
+    errors.push({ entryId, formId, field: "clinic", message: toSafeString(e?.message) || "clinic parse error" });
   }
 
   try {
     serviceRaw = labelFieldAny(entry, labels, "service", "treatment", "procedure", "interest", "interested");
   } catch (e: any) {
-    errors.push({ entryId, formId, field: "service", message: e?.message ?? "service parse error" });
+    errors.push({ entryId, formId, field: "service", message: toSafeString(e?.message) || "service parse error" });
   }
 
   // ── Dates ─────────────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ function parseEntry(entry: any): {
       labelFieldAny(entry, labels, "referrer", "referring", "referer") ??
       (toSafeString(entry.referer_url).trim() || undefined);
   } catch (e: any) {
-    errors.push({ entryId, formId, field: "urls", message: e?.message ?? "url parse error" });
+    errors.push({ entryId, formId, field: "urls", message: toSafeString(e?.message) || "url parse error" });
   }
 
   // ── UTM / tracking fields ─────────────────────────────────────────────────
@@ -309,7 +309,7 @@ function parseEntry(entry: any): {
     utmTerm     = labelFieldAny(entry, labels, "utm term",     "utm_term",     "utmterm");
     fbclid      = labelFieldAny(entry, labels, "fbclid", "fb click", "facebook click");
   } catch (e: any) {
-    errors.push({ entryId, formId, field: "utm", message: e?.message ?? "utm parse error" });
+    errors.push({ entryId, formId, field: "utm", message: toSafeString(e?.message) || "utm parse error" });
   }
 
   // ── Form name ─────────────────────────────────────────────────────────────
@@ -317,19 +317,35 @@ function parseEntry(entry: any): {
   const formName: string | undefined =
     toSafeString(entry.form_title ?? entry.form_name).trim() || undefined;
 
-  // ── Normalize ─────────────────────────────────────────────────────────────
+  // ── Normalize (each wrapped individually for row-level diagnostics) ────────
 
-  const clinicNorm  = normalizeClinicLocation(clinicRaw);
-  const serviceNorm = normalizeService(serviceRaw);
-  const formSourceNorm = formName
-    ? normalizeWebsiteFormSource(formName)
-    : inferWebsiteFormSource(formName, pageUrl);
+  let clinicNorm   = "Unknown";
+  let serviceNorm  = "Other";
+  let formSourceNorm = "Unknown";
+
+  try {
+    clinicNorm = normalizeClinicLocation(clinicRaw);
+  } catch (e: any) {
+    errors.push({ entryId, formId, field: "clinicNorm", message: `clinic mapping error: ${toSafeString(e?.message)}` });
+  }
+
+  try {
+    serviceNorm = normalizeService(serviceRaw);
+  } catch (e: any) {
+    errors.push({ entryId, formId, field: "serviceNorm", message: `service mapping error: ${toSafeString(e?.message)}` });
+  }
+
+  try {
+    formSourceNorm = formName
+      ? normalizeWebsiteFormSource(formName)
+      : inferWebsiteFormSource(formName, pageUrl);
+  } catch (e: any) {
+    errors.push({ entryId, formId, field: "formSourceNorm", message: `form source inference error: ${toSafeString(e?.message)}` });
+  }
 
   // ── Needs-review flag ──────────────────────────────────────────────────────
-  // Mark if no contact info at all and no identifier
 
-  const needsReview =
-    !email && !phone && !fullName && !firstName;
+  const needsReview = !email && !phone && !fullName && !firstName;
 
   // ── Assembled DB record (only schema fields) ─────────────────────────────
 
@@ -373,6 +389,9 @@ function parseEntry(entry: any): {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const isVercel    = !!process.env.VERCEL || !!process.env.VERCEL_URL;
+  const runtimeLabel = isVercel ? "vercel" : "local";
+
   const baseUrl = process.env.GRAVITY_FORMS_BASE_URL;
   const ck      = process.env.GRAVITY_FORMS_CONSUMER_KEY;
   const cs      = process.env.GRAVITY_FORMS_CONSUMER_SECRET;
@@ -406,18 +425,24 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // Track totals outside try so they survive into the catch block
+  let entries: any[]      = [];
+  let created             = 0;
+  let skipped             = 0;
+  let invalidRows         = 0;
+  let needsReview         = 0;
+  const parseErrors: ParseError[] = [];
+  let currentStep         = "init";
+
   try {
-    const entries = await fetchAllEntries(from, to);
+    // ── Step 1: Fetch entries from Gravity Forms ──────────────────────────────
+    currentStep = "fetchEntries";
+    entries = await fetchAllEntries(from, to);
 
-    let created     = 0;
-    let skipped     = 0;
-    let invalidRows = 0;
-    let needsReview = 0;
-    const parseErrors: ParseError[] = [];
-
+    // ── Step 2: Parse each entry defensively ─────────────────────────────────
+    currentStep = "parseEntries";
     const validRecords: any[] = [];
 
-    // ── Parse each entry defensively ─────────────────────────────────────────
     for (const entry of entries) {
       try {
         const { record, needsReview: nr, errors } = parseEntry(entry);
@@ -443,12 +468,13 @@ export async function POST(req: NextRequest) {
           formId:  toSafeString(entry?.form_id),
           field:   "unknown",
           type:    typeof entry,
-          message: e?.message ?? "Unexpected parse error",
+          message: toSafeString(e?.message) || "Unexpected parse error",
         });
       }
     }
 
-    // ── Upsert in batches of 100 ──────────────────────────────────────────────
+    // ── Step 3: Upsert to database in batches ─────────────────────────────────
+    currentStep = "saveToDB";
     const BATCH = 100;
     for (let i = 0; i < validRecords.length; i += BATCH) {
       const chunk  = validRecords.slice(i, i + BATCH);
@@ -460,6 +486,8 @@ export async function POST(req: NextRequest) {
       skipped += chunk.length - result.count;
     }
 
+    // ── Step 4: Update sync run history ───────────────────────────────────────
+    currentStep = "updateSyncRun";
     await prisma.syncRun.update({
       where: { id: syncRun.id },
       data: {
@@ -471,6 +499,8 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // ── Step 5: Format and return response ────────────────────────────────────
+    currentStep = "formatResponse";
     return NextResponse.json({
       success:     true,
       fetched:     entries.length,
@@ -480,20 +510,74 @@ export async function POST(req: NextRequest) {
       invalidRows,
       needsReview,
       syncRunId:   syncRun.id,
-      parseErrors: parseErrors.slice(0, 20),  // cap to avoid bloating response
+      parseErrors: parseErrors.slice(0, 20),
     });
+
   } catch (err: any) {
-    await prisma.syncRun.update({
-      where: { id: syncRun.id },
-      data: {
-        status:       "FAILED",
-        finishedAt:   new Date(),
-        errorMessage: err?.message ?? "Unknown error",
-      },
-    });
-    return NextResponse.json(
-      { error: err?.message ?? "Website leads pull failed", syncRunId: syncRun.id },
-      { status: 200 },
+    const errorMessage  = toSafeString(err?.message) || "Website leads pull failed";
+    const stack         = toSafeString(err?.stack);
+    const partialSuccess = created > 0;
+
+    console.error(
+      `[website-leads POST] step="${currentStep}" runtime="${runtimeLabel}" partial=${partialSuccess}`,
+      "\nError:", errorMessage,
+      "\nStack:", stack || "(no stack)",
     );
+
+    // If records were already saved, mark the run COMPLETED with a warning note
+    try {
+      await prisma.syncRun.update({
+        where: { id: syncRun.id },
+        data: partialSuccess
+          ? {
+              status:         "COMPLETED",
+              finishedAt:     new Date(),
+              recordsFetched: entries.length,
+              recordsCreated: created,
+              recordsSkipped: skipped,
+              errorMessage:   `Post-processing warning (step: ${currentStep}): ${errorMessage}`,
+            }
+          : {
+              status:       "FAILED",
+              finishedAt:   new Date(),
+              errorMessage,
+            },
+      });
+    } catch (updateErr: any) {
+      console.error("[website-leads POST] syncRun update also failed:", toSafeString(updateErr?.message));
+    }
+
+    if (partialSuccess) {
+      return NextResponse.json({
+        success:        true,
+        partialSuccess: true,
+        fetched:        entries.length,
+        created,
+        updated:        0,
+        skipped,
+        invalidRows,
+        needsReview,
+        syncRunId:      syncRun.id,
+        parseErrors:    parseErrors.slice(0, 20),
+        warning:        errorMessage,
+        step:           currentStep,
+        runtime:        runtimeLabel,
+        hint:           "Records were saved, but a post-processing step failed. Check server logs for the full stack trace.",
+      });
+    }
+
+    return NextResponse.json({
+      success:        false,
+      partialSuccess: false,
+      recordsFetched: entries.length,
+      recordsCreated: created,
+      recordsUpdated: 0,
+      error:          "Website Leads processing failed",
+      details:        errorMessage,
+      stack:          stack.slice(0, 1000),
+      runtime:        runtimeLabel,
+      step:           currentStep,
+      hint:           "A non-string value was passed to a string method. Check parseErrors and server logs.",
+    }, { status: 200 });
   }
 }
