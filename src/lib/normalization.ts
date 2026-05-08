@@ -1,20 +1,40 @@
 import prisma from "./prisma";
 
-export function normalizeEmail(email: string | null | undefined): string {
-  if (!email) return "";
-  return email.trim().toLowerCase();
+// ─── Safe string helpers ───────────────────────────────────────────────────────
+
+export function toSafeString(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return (value as unknown[]).map(toSafeString).filter(Boolean).join(" ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return "";
 }
 
-export function normalizePhone(phone: string | null | undefined): string {
-  if (!phone) return "";
-  const digits = phone.replace(/\D/g, "");
+export function normalizeLower(value: unknown): string {
+  return toSafeString(value).trim().toLowerCase();
+}
+
+// ─── Basic normalizers ────────────────────────────────────────────────────────
+
+export function normalizeEmail(email: unknown): string {
+  const s = toSafeString(email).trim();
+  if (!s) return "";
+  return s.toLowerCase();
+}
+
+export function normalizePhone(phone: unknown): string {
+  const s = toSafeString(phone);
+  if (!s) return "";
+  const digits = s.replace(/\D/g, "");
   if (digits.length >= 10) return digits.slice(-10);
   return digits;
 }
 
-export function normalizeName(name: string | null | undefined): string {
-  if (!name) return "";
-  return name.trim().toLowerCase().replace(/\s+/g, " ").replace(/[^a-z0-9 ]/g, "");
+export function normalizeName(name: unknown): string {
+  const s = toSafeString(name).trim();
+  if (!s) return "";
+  return s.toLowerCase().replace(/\s+/g, " ").replace(/[^a-z0-9 ]/g, "");
 }
 
 // ─── Keyword maps ─────────────────────────────────────────────────────────────
@@ -127,67 +147,71 @@ export async function loadMappingCaches() {
     prisma.websiteFormSourceMapping.findMany({ where: { active: true } }),
     prisma.websiteFormNameMapping.findMany({ where: { active: true } }),
   ]);
-  clinicMappingCache = Object.fromEntries(clinics.map((c) => [c.rawValue.toLowerCase(), c.normalizedValue]));
-  serviceMappingCache = Object.fromEntries(services.map((s) => [s.rawValue.toLowerCase(), s.normalizedValue]));
+  clinicMappingCache    = Object.fromEntries(clinics.map((c) => [c.rawValue.toLowerCase(), c.normalizedValue]));
+  serviceMappingCache   = Object.fromEntries(services.map((s) => [s.rawValue.toLowerCase(), s.normalizedValue]));
   formSourceMappingCache = Object.fromEntries(formSources.map((f) => [f.rawValue.toLowerCase(), f.normalizedValue]));
-  formNameMappingCache = Object.fromEntries(formNames.map((f) => [f.rawValue.toLowerCase(), f.normalizedValue]));
+  formNameMappingCache  = Object.fromEntries(formNames.map((f) => [f.rawValue.toLowerCase(), f.normalizedValue]));
 }
 
 export function clearMappingCaches() {
-  clinicMappingCache = null;
-  serviceMappingCache = null;
+  clinicMappingCache    = null;
+  serviceMappingCache   = null;
   formSourceMappingCache = null;
-  formNameMappingCache = null;
+  formNameMappingCache  = null;
 }
 
-// ─── Normalizers ─────────────────────────────────────────────────────────────
+// ─── Normalizers ──────────────────────────────────────────────────────────────
 
-export function normalizeClinicLocation(value: string | null | undefined): string {
-  if (!value) return "Unknown";
-  const key = value.trim().toLowerCase();
+export function normalizeClinicLocation(value: unknown): string {
+  const s = toSafeString(value).trim();
+  if (!s) return "Unknown";
+  const key = s.toLowerCase();
   if (clinicMappingCache?.[key]) return clinicMappingCache[key];
   for (const [kw, canonical] of Object.entries(CLINIC_KEYWORDS)) {
     if (key.includes(kw)) return canonical;
   }
-  return value.trim();
+  return s;
 }
 
-export function normalizeService(value: string | null | undefined): string {
-  if (!value) return "Other";
-  const key = value.trim().toLowerCase();
+export function normalizeService(value: unknown): string {
+  const s = toSafeString(value).trim();
+  if (!s) return "Other";
+  const key = s.toLowerCase();
   if (serviceMappingCache?.[key]) return serviceMappingCache[key];
   for (const [kw, canonical] of Object.entries(SERVICE_KEYWORDS)) {
     if (key.includes(kw)) return canonical;
   }
-  return value.trim();
+  return s;
 }
 
-export function normalizeWebsiteFormSource(value: string | null | undefined): string {
-  if (!value) return "Unknown";
-  const key = value.trim().toLowerCase();
+export function normalizeWebsiteFormSource(value: unknown): string {
+  const s = toSafeString(value).trim();
+  if (!s) return "Unknown";
+  const key = s.toLowerCase();
   if (formSourceMappingCache?.[key]) return formSourceMappingCache[key];
   for (const [kw, canonical] of Object.entries(WEBSITE_FORM_SOURCE_KEYWORDS)) {
     if (key.includes(kw)) return canonical;
   }
-  // Infer from form name or URL patterns
-  return value.trim() || "Unknown";
+  return s || "Unknown";
 }
 
-export function normalizeWebsiteFormName(value: string | null | undefined): string {
-  if (!value) return "Unknown";
-  const key = value.trim().toLowerCase();
+export function normalizeWebsiteFormName(value: unknown): string {
+  const s = toSafeString(value).trim();
+  if (!s) return "Unknown";
+  const key = s.toLowerCase();
   if (formNameMappingCache?.[key]) return formNameMappingCache[key];
-  return value.trim();
+  return s;
 }
 
 /**
  * Determines whether a Meta result type/conversion goal represents a Lead result.
  * Returns the normalized lead label, or null if it is NOT a lead result.
  */
-export function normalizeMetaResultType(resultType: string | null | undefined): string | null {
-  if (!resultType) return null;
-  const key = resultType.trim().toLowerCase();
-  if (META_LEAD_RESULT_LABELS.has(key)) return resultType.trim();
+export function normalizeMetaResultType(resultType: unknown): string | null {
+  const s = toSafeString(resultType).trim();
+  if (!s) return null;
+  const key = s.toLowerCase();
+  if (META_LEAD_RESULT_LABELS.has(key)) return s;
   return null;
 }
 
@@ -195,20 +219,20 @@ export function normalizeMetaResultType(resultType: string | null | undefined): 
  * Infers websiteFormSource from form name or page URL when no explicit source field is present.
  */
 export function inferWebsiteFormSource(
-  formName: string | null | undefined,
-  pageUrl: string | null | undefined
+  formName: unknown,
+  pageUrl: unknown,
 ): string {
-  const name = (formName || "").toLowerCase();
-  const url = (pageUrl || "").toLowerCase();
+  const name = normalizeLower(formName);
+  const url  = normalizeLower(pageUrl);
 
-  if (name.includes("quiz") || url.includes("quiz")) return "Website Quiz";
+  if (name.includes("quiz") || url.includes("quiz"))                             return "Website Quiz";
   if (name.includes("popup") || name.includes("pop-up") || url.includes("popup")) return "Popup";
-  if (name.includes("exit intent") || name.includes("exit-intent")) return "Exit Intent Popup";
+  if (name.includes("exit intent") || name.includes("exit-intent"))              return "Exit Intent Popup";
   if (name.includes("landing") || url.includes("/lp/") || url.includes("/landing")) return "Landing Page Form";
-  if (name.includes("promo") || url.includes("/promo")) return "Promo Page Form";
-  if (name.includes("free consultation") || name.includes("book a free")) return "Free Consultation Form";
-  if (name.includes("contact")) return "Contact Form";
-  if (name.includes("service") || name.includes("treatment")) return "Service Page Form";
+  if (name.includes("promo") || url.includes("/promo"))                          return "Promo Page Form";
+  if (name.includes("free consultation") || name.includes("book a free"))        return "Free Consultation Form";
+  if (name.includes("contact"))                                                   return "Contact Form";
+  if (name.includes("service") || name.includes("treatment"))                    return "Service Page Form";
   return "Unknown";
 }
 
