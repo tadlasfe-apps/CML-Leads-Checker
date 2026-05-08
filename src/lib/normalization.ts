@@ -147,10 +147,10 @@ export async function loadMappingCaches() {
     prisma.websiteFormSourceMapping.findMany({ where: { active: true } }),
     prisma.websiteFormNameMapping.findMany({ where: { active: true } }),
   ]);
-  clinicMappingCache    = Object.fromEntries(clinics.map((c) => [c.rawValue.toLowerCase(), c.normalizedValue]));
-  serviceMappingCache   = Object.fromEntries(services.map((s) => [s.rawValue.toLowerCase(), s.normalizedValue]));
-  formSourceMappingCache = Object.fromEntries(formSources.map((f) => [f.rawValue.toLowerCase(), f.normalizedValue]));
-  formNameMappingCache  = Object.fromEntries(formNames.map((f) => [f.rawValue.toLowerCase(), f.normalizedValue]));
+  clinicMappingCache    = Object.fromEntries(clinics.map((c) => [toSafeString(c.rawValue).toLowerCase(), c.normalizedValue]));
+  serviceMappingCache   = Object.fromEntries(services.map((s) => [toSafeString(s.rawValue).toLowerCase(), s.normalizedValue]));
+  formSourceMappingCache = Object.fromEntries(formSources.map((f) => [toSafeString(f.rawValue).toLowerCase(), f.normalizedValue]));
+  formNameMappingCache  = Object.fromEntries(formNames.map((f) => [toSafeString(f.rawValue).toLowerCase(), f.normalizedValue]));
 }
 
 export function clearMappingCaches() {

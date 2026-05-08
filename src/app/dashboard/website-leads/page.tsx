@@ -80,7 +80,7 @@ function WebsiteLeadsPageInner() {
   const filtered = rows
     .filter((r) => {
       const q = search.toLowerCase();
-      const matchQ = !q || r.formName.toLowerCase().includes(q) || (r.websiteFormSource ?? "").toLowerCase().includes(q) || (r.pageUrl ?? "").toLowerCase().includes(q);
+      const matchQ = !q || (r.formName ?? "").toLowerCase().includes(q) || (r.websiteFormSource ?? "").toLowerCase().includes(q) || (r.pageUrl ?? "").toLowerCase().includes(q);
       const matchSrc = sourceFilter === "all" || r.websiteFormSource === sourceFilter;
       const matchStatus = statusFilter === "all" || r.status === statusFilter;
       return matchQ && matchSrc && matchStatus;

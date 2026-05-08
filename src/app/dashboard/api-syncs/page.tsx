@@ -91,7 +91,8 @@ interface GhlStage    { id: string; name: string; position: number; }
 interface GhlPipeline { id: string; name: string; stages: GhlStage[]; }
 
 const LEAD_INQUIRY_NAMES = ["lead inquiry", "lead inquiry pipeline"];
-function isLeadInquiryPipeline(name: string) {
+function isLeadInquiryPipeline(name: unknown) {
+  if (!name || typeof name !== "string") return false;
   return LEAD_INQUIRY_NAMES.includes(name.toLowerCase().trim());
 }
 
