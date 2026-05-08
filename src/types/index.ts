@@ -3,13 +3,10 @@ export type SourceSystem = "WEBSITE" | "META" | "GHL" | "ZENOTI";
 export type RecordType = "INDIVIDUAL_LEAD" | "AGGREGATE_REPORT";
 
 export type AuditStatus =
-  | "MATCHED"
-  | "MISSING_IN_GHL"
-  | "EXTRA_IN_GHL"
-  | "MISSING_IN_ZENOTI"
-  | "EXTRA_IN_ZENOTI"
-  | "MINOR_MISMATCH"
-  | "MAJOR_MISMATCH"
+  | "PASSED"
+  | "SOURCE_TO_GHL_ISSUE"
+  | "GHL_TO_ZENOTI_ISSUE"
+  | "BOTH_ISSUES"
   | "NEEDS_MAPPING"
   | "NEEDS_REVIEW";
 

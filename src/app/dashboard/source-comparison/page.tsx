@@ -148,12 +148,12 @@ export default function SourceComparisonPage() {
               <SelectTrigger className="w-[170px]"><SelectValue placeholder="All statuses" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="MATCHED">Matched</SelectItem>
-                <SelectItem value="MINOR_MISMATCH">Minor Mismatch</SelectItem>
-                <SelectItem value="MAJOR_MISMATCH">Major Mismatch</SelectItem>
-                <SelectItem value="MISSING_IN_GHL">Missing in GHL</SelectItem>
-                <SelectItem value="MISSING_IN_ZENOTI">Missing in Zenoti</SelectItem>
-                <SelectItem value="EXTRA_IN_GHL">Extra in GHL</SelectItem>
+                <SelectItem value="PASSED">Passed</SelectItem>
+                <SelectItem value="SOURCE_TO_GHL_ISSUE">Source → GHL Issue</SelectItem>
+                <SelectItem value="GHL_TO_ZENOTI_ISSUE">GHL → Zenoti Issue</SelectItem>
+                <SelectItem value="BOTH_ISSUES">Both Issues</SelectItem>
+                <SelectItem value="NEEDS_MAPPING">Needs Mapping</SelectItem>
+                <SelectItem value="NEEDS_REVIEW">Needs Review</SelectItem>
               </SelectContent>
             </Select>
           </div>

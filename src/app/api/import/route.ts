@@ -3,7 +3,12 @@ import { parseCSV, type ParsedSourceSystem } from "@/lib/csv-parser";
 import prisma from "@/lib/prisma";
 
 export async function POST(req: NextRequest) {
-  const formData = await req.formData();
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
+  }
   const file = formData.get("file") as File | null;
   const source = formData.get("source") as ParsedSourceSystem | null;
 
@@ -16,7 +21,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unknown source system" }, { status: 400 });
   }
 
-  const text = await file.text();
+  let text: string;
+  try {
+    text = await file.text();
+  } catch {
+    return NextResponse.json({ error: "Could not read file" }, { status: 400 });
+  }
   const { records, invalidRows: parseInvalidRows, errors: parseErrors } = parseCSV(text, source);
 
   const validRecords = records.filter((r) => !r._dateInvalid);
@@ -41,6 +51,7 @@ export async function POST(req: NextRequest) {
 
   const errors = parseErrors.slice(0, 30);
 
+  try {
   const batch = await prisma.importBatch.create({
     data: {
       sourceSystem: source,
@@ -106,12 +117,21 @@ export async function POST(req: NextRequest) {
     importedDateRangeEnd: maxDate?.toISOString().slice(0, 10) ?? null,
     errors,
   });
+  } catch (err: any) {
+    console.error("[/api/import POST]", err?.message ?? err);
+    return NextResponse.json({ error: err?.message ?? "Database error" }, { status: 500 });
+  }
 }
 
 export async function GET() {
-  const history = await prisma.importBatch.findMany({
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
-  return NextResponse.json(history);
+  try {
+    const history = await prisma.importBatch.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+    return NextResponse.json(history);
+  } catch (err: any) {
+    console.error("[/api/import GET]", err?.message ?? err);
+    return NextResponse.json([], { status: 200 });
+  }
 }

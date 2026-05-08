@@ -54,27 +54,13 @@ function computeAuditStatus(
   zenotiLeads: number
 ): AuditStatus {
   const src = websiteLeads + metaLeads;
-  const srcGhlDiff = src - ghlLeads;
-  const ghlZenotiDiff = ghlLeads - zenotiLeads;
+  const srcGhlMatch = src === ghlLeads;
+  const ghlZenotiMatch = ghlLeads === zenotiLeads;
 
-  if (src === 0 && ghlLeads === 0 && zenotiLeads === 0) return "MATCHED";
-
-  const srcGhlPct = src > 0 ? Math.abs(srcGhlDiff) / src : 0;
-  const ghlZenotiPct = ghlLeads > 0 ? Math.abs(ghlZenotiDiff) / ghlLeads : 0;
-
-  if (srcGhlDiff === 0 && ghlZenotiDiff === 0) return "MATCHED";
-
-  if (srcGhlDiff > 0 && ghlLeads === 0 && src > 0) return "MISSING_IN_GHL";
-  if (srcGhlDiff < 0) return "EXTRA_IN_GHL";
-  if (ghlZenotiDiff > 0 && zenotiLeads === 0 && ghlLeads > 0) return "MISSING_IN_ZENOTI";
-  if (ghlZenotiDiff < 0) return "EXTRA_IN_ZENOTI";
-
-  const maxPct = Math.max(srcGhlPct, ghlZenotiPct);
-  const maxAbs = Math.max(Math.abs(srcGhlDiff), Math.abs(ghlZenotiDiff));
-
-  if (maxPct > 0.05 || maxAbs > 3) return "MAJOR_MISMATCH";
-  if (maxPct > 0 || maxAbs > 0) return "MINOR_MISMATCH";
-  return "MATCHED";
+  if (srcGhlMatch && ghlZenotiMatch) return "PASSED";
+  if (!srcGhlMatch && !ghlZenotiMatch) return "BOTH_ISSUES";
+  if (!srcGhlMatch) return "SOURCE_TO_GHL_ISSUE";
+  return "GHL_TO_ZENOTI_ISSUE";
 }
 
 function computeDiscrepancyLocation(

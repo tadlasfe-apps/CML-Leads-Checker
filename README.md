@@ -1,238 +1,235 @@
-# Lead Count Audit — Canada MedLaser
+# Lead Checker — Canada MedLaser
 
-A lead number discrepancy audit dashboard that compares lead counts across four sources:
-**Website Leads → Meta Ads → GHL (Lead Inquiry Pipeline) → Zenoti**.
+A **daily lead count checker** that verifies whether leads are flowing correctly from their original sources into GHL and then into Zenoti.
 
-The goal is to identify *where* leads are being lost or over-counted at each handoff, not to
-match individual leads end-to-end.
+**This app is read-only.** It imports or pulls counts from Website Leads, Meta Ads, GHL, and Zenoti — then compares them to find where the flow breaks. It does not push data to any external platform, does not replace GHL, Zenoti, Meta, WordPress, or Gravity Forms, and does not perform any CRM writeback.
 
 ---
 
-## Architecture
+## Daily Audit Flow
 
-- **Framework:** Next.js 15 (App Router) + TypeScript
-- **Database:** PostgreSQL via Prisma ORM (Supabase-compatible)
-- **UI:** Tailwind CSS + shadcn/ui + Recharts
-- **Date handling:** date-fns + native `Intl` for timezone conversion
+```
+Website Leads + Meta Leads
+        ↓
+GHL Lead Inquiry Pipeline
+        ↓
+    Zenoti Leads
+```
+
+The checker answers these questions every day:
+
+1. How many leads came from Website?
+2. How many leads came from Meta Ads?
+3. How many total source leads were expected?
+4. How many leads appeared in the GHL Lead Inquiry Pipeline?
+5. How many leads appeared in Zenoti?
+6. Did all source leads reach GHL? (Source → GHL check)
+7. Did all GHL leads reach Zenoti? (GHL → Zenoti check)
+8. If there is a mismatch — where is the gap?
+
+---
+
+## Core Formulas
+
+| Formula | Calculation |
+|---|---|
+| Total Source Leads | Website Leads + Meta Leads |
+| Source vs GHL Diff | Total Source Leads − GHL Leads |
+| GHL vs Zenoti Diff | GHL Leads − Zenoti Leads |
+| Source → GHL Match Rate | GHL Leads ÷ Total Source Leads × 100 |
+| GHL → Zenoti Match Rate | Zenoti Leads ÷ GHL Leads × 100 |
+
+If denominator is 0, match rate shows N/A.
+
+---
+
+## Checker Statuses
+
+### Check Status
+
+| Status | Meaning |
+|---|---|
+| Passed | All counts match: Source = GHL = Zenoti |
+| Source → GHL Issue | Source count differs from GHL |
+| GHL → Zenoti Issue | GHL count differs from Zenoti |
+| Both Issues | Source ≠ GHL and GHL ≠ Zenoti |
+| Needs Mapping | Clinic, service, or form source is unmapped |
+| Needs Review | Date is invalid, ambiguous, or missing |
+
+### Discrepancy Location
+
+| Value | Meaning |
+|---|---|
+| No Discrepancy | Total Source = GHL and GHL = Zenoti |
+| Source → GHL Gap | Total Source ≠ GHL (GHL = Zenoti) |
+| GHL → Zenoti Gap | GHL ≠ Zenoti (Total Source = GHL) |
+| Both Gaps | Both comparisons mismatch |
+| Needs Mapping | Cannot compute — unmapped data |
+| Needs Review | Cannot compute — date issues |
 
 ---
 
 ## Setup
 
-### 1. Prerequisites
-
-- Node.js 18+
-- PostgreSQL database (local or Supabase)
-
-### 2. Install dependencies
-
 ```bash
+# 1. Install dependencies
 npm install
-```
 
-### 3. Configure environment
-
-Copy the example env file and fill in your database URL:
-
-```bash
+# 2. Configure database
 cp .env.example .env
-```
+# Set DATABASE_URL to your PostgreSQL connection string
 
-`.env` must contain:
+# 3. Apply schema and generate Prisma client
+npx prisma db push
+npx prisma generate
 
-```
-DATABASE_URL="postgresql://user:pass@host:5432/leads_checker"
-```
+# 4. (Optional) seed sample data
+npx ts-node --compiler-options '{"module":"CommonJS"}' prisma/seed.ts
 
-### 4. Set up the database
-
-```bash
-npx prisma db push        # push schema to database
-npx prisma generate       # generate Prisma client
-```
-
-### 5. (Optional) Seed with sample data
-
-```bash
-npx ts-node --project tsconfig.json prisma/seed.ts
-```
-
-### 6. Run the dev server
-
-```bash
+# 5. Start dev server
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) — it redirects to `/dashboard/overview`.
+---
+
+## Dashboard Pages
+
+| Page | Purpose |
+|---|---|
+| **Source Comparison** ⭐ | Primary view. Date-by-date comparison of all 4 sources with diff and match rate columns. Default: last 30 days. |
+| Overview | Summary KPIs + trend charts for the selected date range |
+| Website Leads | Form-level breakdown — which forms are submitting leads and how many reached GHL/Zenoti |
+| Meta Leads | Campaign-level Meta Ads lead result counts |
+| Clinic Breakdown | Per-clinic comparison across all 4 sources |
+| Service Breakdown | Per-service comparison across all 4 sources |
+| Imports | Upload CSVs from any of the 4 sources |
+| Data Pulls | Status of CSV imports and optional API reads (read-only) |
+| Mapping Settings | Normalize clinic names, service names, and form sources |
 
 ---
 
-## Pages
+## Data Sources
 
-| Page | Path | Description |
-|------|------|-------------|
-| Overview | `/dashboard/overview` | KPI cards, timeline charts, funnel bar chart |
-| Source Comparison | `/dashboard/source-comparison` | Date-grouped table with click-to-drilldown by clinic |
-| Website Leads | `/dashboard/website-leads` | Form-level breakdown: submissions, unique, duplicates, GHL/Zenoti counts |
-| Meta Leads | `/dashboard/meta-leads` | Aggregate Meta Ads rows filtered to lead result types only |
-| Clinic Breakdown | `/dashboard/clinic-breakdown` | Lead counts per clinic with discrepancy indicators |
-| Service Breakdown | `/dashboard/service-breakdown` | Lead counts per service with discrepancy indicators |
-| Imports | `/dashboard/imports` | Upload CSVs for any source; view import history |
-| API Syncs | `/dashboard/api-syncs` | View API sync run history (future integrations) |
-| Mapping Settings | `/dashboard/settings` | Manage clinic, service, form source, and form name mappings |
+### Website Leads
+Counted as submitted website form entries. Imported via:
+- Gravity Forms CSV export
+- Gravity Forms API read (optional)
 
----
+Breakdown by: form source, form name, clinic, service, date.
 
-## Data Sources and CSV Formats
+### Meta Leads
+Counted as Meta Ads Manager lead-type result actions only.
 
-### Website Leads (`WEBSITE`)
+**Lead result types counted:** Lead, Leads, On-Facebook Leads, Website Leads, Messaging Leads, Conversion Leads, Instant Form Leads.
 
-Individual form submissions from website forms (Gravity Forms, WPForms, etc.).
+**Not counted:** link clicks, impressions, reach, engagement, page likes, purchases, add to cart, view content.
 
-Key fields: `Form Name`, `Date`, `Full Name`, `Email`, `Phone`, `Service`, `Clinic / Location`,
-`Page URL`, `UTM Source`, `UTM Campaign`
+Imported via Meta Ads Manager aggregate CSV export or Meta Ads Insights API (optional).
 
-- `websiteFormSource` is inferred from form name / page URL keywords if not explicitly present
-  (e.g., "popup" → Popup, "quiz" → Website Quiz, "/lp/" → Landing Page Form)
-- Duplicate detection: within 7 days, same phone/email + clinic + service + form is flagged as duplicate
+### GHL Lead Inquiry Pipeline
+Counted as contacts or opportunities in the **Lead Inquiry pipeline only**.
 
-### Meta Ads (`META`) — Aggregate Only
+GHL is **read-only**. No contacts, opportunities, or pipeline stages are created or modified.
 
-Aggregate Meta Ads Manager export. Each row is one result type per ad per day.
+Imported via GHL pipeline export CSV or GHL API read (optional).
 
-Key fields: `Day`, `Campaign name`, `Ad Set Name`, `Ad Name`, `Result Type / Reporting Results`,
-`Results`, `Spend`, `Cost per result`, `Impressions`
+### Zenoti Leads
+Counted as unique lead/opportunity records. Appointment-only records are excluded from counts.
 
-- **Only rows where `Result Type` matches a lead type** (Leads, On-Facebook Leads, Website Leads,
-  Messaging Leads, etc.) contribute to `metaLeadCount`.
-- Rows with result types like ThruPlays, Impressions, Link Clicks get `metaLeadCount = 0`.
-- Dedup key: `META_AGG|date|campaignId|adSetId|adId|resultType`
+**Zenoti Opportunities CSV column mapping:**
 
-### GHL — GoHighLevel (`GHL`)
+| CSV Column | Field | Notes |
+|---|---|---|
+| NO | Unique lead ID | Used for deduplication. Required. |
+| GUEST | Lead name | — |
+| GUEST CODE | Guest identifier | Fallback dedup key |
+| NAME | Service / lead type | — |
+| CENTER | Clinic location | — |
+| MOBILE | Phone number | — |
+| SALES STAGE | Status | — |
+| CREATION DATE | Lead created date | Primary date field |
 
-Contact or opportunity export filtered to the **Lead Inquiry pipeline only**.
+**Deduplication fallback** (if NO is missing):
+1. GUEST CODE + CREATION DATE
+2. MOBILE + CREATION DATE + CENTER
 
-Key fields: `Contact Id`, `Opportunity Id`, `Created`, `First Name`, `Last Name`, `Email`, `Phone`,
-`Location`, `Service`, `Pipeline Name`, `Stage Name`
-
-### Zenoti (`ZENOTI`)
-
-Lead or inquiry export from Zenoti CRM. Rows are classified as appointment-based when they have
-no lead/inquiry/guest creation date — only an appointment date.
-
-Date priority: `leadCreatedDate > inquiryDate > guestCreatedDate > createdDate > appointmentDate`
-
-- Rows with only `appointmentDate` are flagged `isAppointmentBased = true` and excluded from
-  lead counts (they are not leads, they are existing clients booking services).
+Zenoti API read is optional. CSV export is the preferred method.
 
 ---
 
-## Lead Count Formulas
+## CSV Format Reference
 
-```
-Total Source Leads = Website Leads (unique, non-duplicate) + Meta Lead Count
-Source → GHL Diff  = Total Source - GHL Leads
-GHL → Zenoti Diff  = GHL Leads - Zenoti Leads (isAppointmentBased = false)
+### Website Leads CSV
+Required: `Form Name`, `Date`  
+Optional: `Full Name`, `Email`, `Phone`, `Service`, `Clinic / Location`, `Form ID`, `Page URL`, `UTM Source`, `UTM Campaign`
 
-Source → GHL Match Rate  = (GHL / Total Source) × 100
-GHL → Zenoti Match Rate  = (Zenoti / GHL) × 100
-```
+### Meta Ads CSV
+Required: `Day` (or `Date`), `Results`  
+Recommended: `Campaign Name`, `Ad Set Name`, `Result Type`, `Spend`, `Cost per Result`, `Impressions`, `Campaign ID`
 
-### Discrepancy Location
+### GHL Pipeline CSV
+Required: `Created` (or `Contact Created Date`), one of `Contact Id` / `Opportunity Id`  
+Recommended: `First Name`, `Last Name`, `Email`, `Phone`, `Location`, `Service`, `Pipeline Name`, `Stage Name`
 
-| Value | Meaning |
-|-------|---------|
-| `NONE` | All three counts match |
-| `SOURCE_TO_GHL` | Source ≠ GHL, GHL = Zenoti |
-| `GHL_TO_ZENOTI` | Source = GHL, GHL ≠ Zenoti |
-| `BOTH` | Source ≠ GHL and GHL ≠ Zenoti |
-
-### Audit Status
-
-| Status | Meaning |
-|--------|---------|
-| `MATCHED` | All counts equal |
-| `MINOR_MISMATCH` | ≤5% or ≤3 leads difference |
-| `MAJOR_MISMATCH` | >5% or >3 leads difference |
-| `MISSING_IN_GHL` | Source > 0, GHL = 0 |
-| `EXTRA_IN_GHL` | GHL > Source |
-| `MISSING_IN_ZENOTI` | GHL > 0, Zenoti = 0 |
-| `EXTRA_IN_ZENOTI` | Zenoti > GHL |
-
----
-
-## Mapping System
-
-Mappings normalize raw CSV values to canonical names used in reporting.
-
-| Type | Model | Examples |
-|------|-------|---------|
-| Clinic | `ClinicMapping` | "CML Midtown" → "Toronto" |
-| Service | `ServiceMapping` | "LHR" → "Laser Hair Removal" |
-| Website Form Source | `WebsiteFormSourceMapping` | "popup" → "Popup" |
-| Website Form Name | `WebsiteFormNameMapping` | "Free Consult Form v2" → "Free Consultation Popup" |
-
-After adding or editing mappings, trigger **Reconciliation** from the top bar to re-apply all
-mappings to existing records retroactively.
-
----
-
-## URL Filter Persistence
-
-All pages persist their filters in the URL query string:
-
-```
-/dashboard/source-comparison?preset=last30&from=2025-04-08&to=2025-05-08&groupBy=daily&timezone=America/Toronto
-```
-
-Filters: `from`, `to`, `preset`, `groupBy`, `timezone`, `clinic`, `service`, `status`, `q`
+### Zenoti Opportunities CSV
+Required: `NO`, `CREATION DATE`  
+Recommended: `GUEST`, `GUEST CODE`, `NAME`, `CENTER`, `MOBILE`, `SALES STAGE`
 
 ---
 
 ## API Routes
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/overview` | KPIs + timeline. Params: `from`, `to`, `groupBy`, `timezone`, `clinic`, `service` |
-| GET | `/api/source-comparison` | Date-grouped rows. Same params + `drilldown=true&by=clinic` |
-| GET | `/api/website-leads` | Website form breakdown |
-| GET | `/api/meta-leads` | Meta aggregate breakdown |
-| GET | `/api/clinic-breakdown` | Per-clinic counts |
-| GET | `/api/service-breakdown` | Per-service counts |
-| POST | `/api/import` | Upload CSV (`multipart/form-data`: `file`, `source`) |
-| GET | `/api/import` | Import history |
-| GET | `/api/export` | CSV export. Param `type`: `source-comparison`, `website-leads`, `meta-leads`, `duplicates` |
-| GET/POST | `/api/mappings` | Get/create mappings |
-| DELETE | `/api/mappings/[id]` | Delete mapping (param `?type=clinic\|service\|websiteFormSource\|websiteFormName`) |
-| POST | `/api/reconcile` | Trigger reconciliation engine |
-| GET | `/api/filters` | Distinct clinic/service values for filter dropdowns |
-| GET | `/api/api-syncs` | Sync run history |
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/source-comparison` | GET | Date-grouped comparison table (primary) |
+| `/api/overview` | GET | KPI summary + timeline |
+| `/api/website-leads` | GET | Website form breakdown |
+| `/api/meta-leads` | GET | Meta aggregate rows + campaign totals |
+| `/api/clinic-breakdown` | GET | Per-clinic comparison |
+| `/api/service-breakdown` | GET | Per-service comparison |
+| `/api/import` | POST/GET | Upload CSV / import history |
+| `/api/filters` | GET | Available clinic/service filter values |
+| `/api/mappings` | GET/POST | Manage normalization mappings |
+| `/api/export` | GET | Download CSV export |
+| `/api/reconcile` | POST | Re-apply normalizations + detect duplicates |
 
 ---
 
-## Database Models
+## How to Check Leads
 
-- `LeadSourceRecord` — one row per individual lead (WEBSITE / GHL / ZENOTI) or per Meta aggregate row
-- `ImportBatch` — metadata for each CSV upload
-- `SyncRun` — API sync run history
-- `IntegrationSettings` — per-source integration config (for future API integrations)
-- `ClinicMapping`, `ServiceMapping`, `WebsiteFormSourceMapping`, `WebsiteFormNameMapping` — normalization tables
+### Check yesterday's leads
+Go to **Source Comparison** → set date range to yesterday (or use "Yesterday" preset).  
+Review the single row: Website + Meta → GHL → Zenoti, with diff and match rate.
+
+### Check the last 7 days
+Go to **Source Comparison** → select "Last 7 days" preset → grouping: Daily.  
+Each row is one day. Red diff values indicate a gap.
+
+### Check the last 30 days
+Go to **Source Comparison** → select "Last 30 days" preset.  
+Sort by `Src↔GHL` descending to see the worst days first.
+
+### Verify Website + Meta vs GHL
+Look at the `Src↔GHL` column. If positive, source leads > GHL leads (leads are not making it into GHL). If negative, extra leads appear in GHL.
+
+### Verify GHL vs Zenoti
+Look at the `GHL↔Zenoti` column. If positive, GHL leads > Zenoti (leads are not making it into Zenoti). If negative, extra leads appear in Zenoti.
+
+### Drill down by clinic
+Click any row in Source Comparison to expand a per-clinic breakdown for that period.
 
 ---
 
-## Reconciliation Engine
+## Language Notes
 
-`POST /api/reconcile` runs three steps:
+This app uses:
+- **Import** — uploading a CSV file
+- **Pull** — fetching data via API read
+- **Check** — comparing counts
+- **Audit** — reviewing discrepancies
 
-1. **Re-normalize** — reapplies clinic, service, and form source mappings to all records
-2. **Detect duplicates** — within 7-day windows per clinic × service × form (Website only)
-3. **Flag appointment-based Zenoti** — marks status on records with only appointment dates
-
----
-
-## Development Notes
-
-- `date-fns-tz` is replaced by native `Intl.DateTimeFormat` for timezone conversion (no extra dep)
-- Meta `metaLeadCount` is computed at parse time — rows without lead result types get `0`
-- Zenoti `isAppointmentBased` is set at import time and persisted; reconciliation does not clear it
-- `@@unique([sourceSystem, externalId])` prevents duplicate imports on re-upload
+This app does **not**:
+- Sync data to GHL, Zenoti, Meta, or Gravity Forms
+- Perform CRM writeback
+- Replicate or replace any source system
+- Push, update, or move records in any external platform

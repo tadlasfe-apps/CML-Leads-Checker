@@ -3,10 +3,14 @@ import { getServiceBreakdown } from "@/lib/data";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
-  const data = await getServiceBreakdown(
-    searchParams.get("from") || undefined,
-    searchParams.get("to") || undefined,
-    searchParams.get("clinic") || undefined,
-  );
-  return NextResponse.json(data);
+  try {
+    return NextResponse.json(await getServiceBreakdown(
+      searchParams.get("from") || undefined,
+      searchParams.get("to") || undefined,
+      searchParams.get("clinic") || undefined,
+    ));
+  } catch (err: any) {
+    console.error("[/api/service-breakdown]", err?.message ?? err);
+    return NextResponse.json([], { status: 200 });
+  }
 }

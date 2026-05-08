@@ -43,13 +43,15 @@ const SOURCE_INFO: Record<SourceType, { label: string; color: string; descriptio
     ],
   },
   ZENOTI: {
-    label: "Zenoti",
+    label: "Zenoti Leads",
     color: "warning",
-    description: "Lead/inquiry export — rows with only appointment dates are flagged as appointment-based",
+    description: "Zenoti Opportunities CSV export. Lead count = unique 'NO' values. Rows with only an appointment date are excluded from lead counts.",
     headers: [
-      "Guest Id", "Lead Created Date", "Inquiry Date", "Guest Created Date",
-      "Guest Name", "Email", "Phone", "Center / Clinic",
-      "Service Name", "Appointment Date",
+      "NO", "GUEST", "GUEST CODE", "NAME (service type)",
+      "CENTER", "MOBILE", "SALES STAGE", "CREATION DATE",
+      "— or standard format: —",
+      "Guest Id", "Lead Created Date", "Inquiry Date",
+      "Guest Name", "Email", "Phone", "Center", "Service",
     ],
   },
 };

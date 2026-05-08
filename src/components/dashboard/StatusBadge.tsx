@@ -5,15 +5,12 @@ import type { AuditStatus, DiscrepancyLocation } from "@/types";
 type BadgeVariant = "success" | "warning" | "destructive" | "info" | "purple" | "outline";
 
 const auditConfig: Record<AuditStatus, { label: string; variant: BadgeVariant }> = {
-  MATCHED:            { label: "Matched",              variant: "success" },
-  MINOR_MISMATCH:     { label: "Minor Mismatch",       variant: "warning" },
-  MAJOR_MISMATCH:     { label: "Major Mismatch",       variant: "destructive" },
-  MISSING_IN_GHL:     { label: "Missing in GHL",       variant: "destructive" },
-  EXTRA_IN_GHL:       { label: "Extra in GHL",         variant: "warning" },
-  MISSING_IN_ZENOTI:  { label: "Missing in Zenoti",    variant: "warning" },
-  EXTRA_IN_ZENOTI:    { label: "Extra in Zenoti",      variant: "info" },
-  NEEDS_MAPPING:      { label: "Needs Mapping",        variant: "info" },
-  NEEDS_REVIEW:       { label: "Needs Review",         variant: "purple" },
+  PASSED:                { label: "Passed",                 variant: "success" },
+  SOURCE_TO_GHL_ISSUE:   { label: "Source → GHL Issue",     variant: "warning" },
+  GHL_TO_ZENOTI_ISSUE:   { label: "GHL → Zenoti Issue",     variant: "warning" },
+  BOTH_ISSUES:           { label: "Both Issues",            variant: "destructive" },
+  NEEDS_MAPPING:         { label: "Needs Mapping",          variant: "info" },
+  NEEDS_REVIEW:          { label: "Needs Review",           variant: "purple" },
 };
 
 const discrepancyConfig: Record<DiscrepancyLocation, { label: string; variant: BadgeVariant }> = {

@@ -22,6 +22,8 @@ export async function GET(req: NextRequest) {
   const type = searchParams.get("type") || "source-comparison";
   const from = searchParams.get("from") || undefined;
   const to = searchParams.get("to") || undefined;
+
+  try {
   const dateFilter = buildDateFilter(from, to);
   const where = dateFilter ? { createdAtSource: dateFilter } : {};
 
@@ -118,4 +120,8 @@ export async function GET(req: NextRequest) {
       "Content-Disposition": `attachment; filename="${filename}"`,
     },
   });
+  } catch (err: any) {
+    console.error("[/api/export]", err?.message ?? err);
+    return NextResponse.json({ error: err?.message ?? "Export failed" }, { status: 500 });
+  }
 }

@@ -350,7 +350,8 @@ function parseGhlRow(row: Record<string, string>): ParsedRecord {
 // ─── Zenoti ───────────────────────────────────────────────────────────────────
 
 function parseZenotiRow(row: Record<string, string>): ParsedRecord {
-  const leadDateVal = h(row, "lead created date", "leadcreateddate");
+  // CREATION DATE covers Zenoti Opportunities CSV ("CREATION DATE") as well as standard exports
+  const leadDateVal = h(row, "creation date", "creationdate", "lead created date", "leadcreateddate");
   const inquiryDateVal = h(row, "inquiry date", "inquirydate");
   const guestCreatedVal = h(row, "guest created date", "guestcreateddate");
   const createdVal = h(row, "created date", "created", "date");
@@ -365,18 +366,23 @@ function parseZenotiRow(row: Record<string, string>): ParsedRecord {
   const isAppointmentBased = !leadCreatedDate && !inquiryDate && !guestCreatedDate &&
     !parseDate(createdVal) && !!appointmentDate;
 
-  const leadId = h(row, "lead id", "leadid");
+  // "NO" = unique opportunity/lead ID in Zenoti Opportunities CSV
+  const leadId = h(row, "no", "no.", "lead id", "leadid");
   const inquiryId = h(row, "inquiry id", "inquiryid");
   const prospectId = h(row, "prospect id", "prospectid");
-  const guestId = h(row, "guest id", "guestid", "client id", "clientid");
+  // "GUEST CODE" = guest identifier in Zenoti Opportunities CSV
+  const guestId = h(row, "guest code", "guestcode", "guest id", "guestid", "client id", "clientid");
   const appointmentId = h(row, "appointment id", "appointmentid");
-  const name = h(row, "guest name", "lead name", "full name", "name", "client name") ||
+  // "GUEST" = guest/lead name in Zenoti Opportunities CSV
+  const name = h(row, "guest", "guest name", "lead name", "full name", "client name") ||
     `${h(row, "first name")} ${h(row, "last name")}`.trim();
   const email = h(row, "email");
   const phone = h(row, "phone", "phone number", "mobile");
   const clinicRaw = h(row, "center", "clinic", "clinic location", "location");
-  const serviceRaw = h(row, "service", "interested service", "treatment");
-  const status = h(row, "status", "lead status");
+  // "NAME" = service/lead type in Zenoti Opportunities CSV
+  const serviceRaw = h(row, "service", "interested service", "treatment", "name");
+  // "SALES STAGE" = status in Zenoti Opportunities CSV
+  const status = h(row, "sales stage", "salesstage", "status", "lead status");
   const source = h(row, "source", "lead source");
 
   const clinicNorm = normalizeClinicLocation(clinicRaw || undefined);

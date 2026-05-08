@@ -15,7 +15,7 @@ const NAV_ITEMS = [
   { label: "Clinic Breakdown", href: "/dashboard/clinic-breakdown", icon: MapPin },
   { label: "Service Breakdown", href: "/dashboard/service-breakdown", icon: Stethoscope },
   { label: "Imports", href: "/dashboard/imports", icon: Upload },
-  { label: "API Syncs", href: "/dashboard/api-syncs", icon: Plug },
+  { label: "Data Pulls", href: "/dashboard/api-syncs", icon: Plug },
   { label: "Mapping Settings", href: "/dashboard/settings", icon: Settings },
 ];
 
