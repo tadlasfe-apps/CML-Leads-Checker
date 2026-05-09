@@ -336,9 +336,18 @@ function parseEntry(entry: any): {
   }
 
   try {
-    formSourceNorm = formName
-      ? normalizeWebsiteFormSource(formName)
-      : inferWebsiteFormSource(formName, pageUrl);
+    // 1. Look for an explicit source hidden field in the form entry
+    const explicitSource = labelFieldAny(
+      entry, labels,
+      "form source", "form_source", "lead source", "lead_source",
+      "popup source", "popup_source", "source type", "source_type",
+    );
+    if (explicitSource) {
+      formSourceNorm = normalizeWebsiteFormSource(explicitSource);
+    } else {
+      // 2. Infer from formName keywords and pageUrl
+      formSourceNorm = inferWebsiteFormSource(formName, pageUrl);
+    }
   } catch (e: any) {
     errors.push({ entryId, formId, field: "formSourceNorm", message: `form source inference error: ${toSafeString(e?.message)}` });
   }

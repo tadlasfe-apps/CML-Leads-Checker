@@ -525,11 +525,23 @@ export async function getServiceBreakdown(
 
 // ─── Website Forms ────────────────────────────────────────────────────────────
 
+// Builds a date filter that uses createdAtSource with reportDate as fallback
+// for WEBSITE records that may have been imported without createdAtSource.
+function websiteDateWhere(dateFilter: ReturnType<typeof buildDateFilter>) {
+  if (!dateFilter) return {};
+  return {
+    OR: [
+      { createdAtSource: dateFilter },
+      { createdAtSource: null as null, reportDate: dateFilter },
+    ],
+  };
+}
+
 export async function getWebsiteForms(
   from?: string, to?: string, clinic?: string, service?: string
 ): Promise<WebsiteFormRow[]> {
   const dateFilter = buildDateFilter(from, to);
-  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const dateWhere  = websiteDateWhere(dateFilter);
   const extra = {
     ...(clinic ? { clinicLocationNormalized: clinic } : {}),
     ...(service ? { serviceNormalized: service } : {}),
@@ -537,7 +549,7 @@ export async function getWebsiteForms(
 
   const forms = await prisma.leadSourceRecord.groupBy({
     by: ["formName", "websiteFormSource", "formId", "backendProvider", "pageUrl"],
-    where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE" },
+    where: { ...extra, sourceSystem: "WEBSITE", ...(Object.keys(dateWhere).length ? dateWhere : {}) },
     _count: { id: true },
     orderBy: { _count: { id: "desc" } },
   });
@@ -547,34 +559,34 @@ export async function getWebsiteForms(
     if (!f.formName) continue;
     const total = f._count.id;
 
-    const [unique, dupes, ghlMatches, zenotiMatches, lastSub] = await Promise.all([
-      prisma.leadSourceRecord.count({
-        where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE", formName: f.formName, isDuplicate: false },
-      }),
-      prisma.leadSourceRecord.count({
-        where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE", formName: f.formName, isDuplicate: true },
-      }),
-      prisma.leadSourceRecord.count({
-        where: {
-          ...dateWhere, ...extra, sourceSystem: "GHL",
-          normalizedPhone: { in: await getFormPhoneSet(f.formName, dateWhere, extra) },
-        },
-      }),
-      prisma.leadSourceRecord.count({
-        where: {
-          ...dateWhere, ...extra, sourceSystem: "ZENOTI", isAppointmentBased: false,
-          normalizedPhone: { in: await getFormPhoneSet(f.formName, dateWhere, extra) },
-        },
-      }),
+    // Match EXACTLY this group's field values so unique + dupes = total always.
+    // Null fields must be matched as null (IS NULL), not ignored.
+    const groupWhere = {
+      ...extra,
+      sourceSystem: "WEBSITE" as const,
+      formName: f.formName,
+      websiteFormSource: f.websiteFormSource,
+      formId: f.formId,
+      backendProvider: f.backendProvider,
+      pageUrl: f.pageUrl,
+      ...(Object.keys(dateWhere).length ? dateWhere : {}),
+    };
+
+    const [unique, dupes, lastSub] = await Promise.all([
+      prisma.leadSourceRecord.count({ where: { ...groupWhere, isDuplicate: false } }),
+      prisma.leadSourceRecord.count({ where: { ...groupWhere, isDuplicate: true } }),
       prisma.leadSourceRecord.findFirst({
-        where: { ...dateWhere, sourceSystem: "WEBSITE", formName: f.formName },
+        where: { ...groupWhere },
         orderBy: { createdAtSource: "desc" },
-        select: { createdAtSource: true },
+        select: { createdAtSource: true, reportDate: true },
       }),
     ]);
 
-    const websiteToGhlDiff = unique - ghlMatches;
-    const websiteToZenotiDiff = unique - zenotiMatches;
+    // Safety: uniqueLeads must never exceed totalSubmissions
+    const uniqueLeads    = Math.min(unique, total);
+    const duplicateCount = Math.max(0, total - uniqueLeads);
+
+    const status: import("@/types").AuditStatus = uniqueLeads === 0 ? "NEEDS_REVIEW" : "PASSED";
 
     results.push({
       id: f.formName,
@@ -584,30 +596,67 @@ export async function getWebsiteForms(
       backendProvider: f.backendProvider,
       pageUrl: f.pageUrl,
       totalSubmissions: total,
-      uniqueLeads: unique,
-      duplicateCount: dupes,
-      ghlCount: ghlMatches,
-      zenotiCount: zenotiMatches,
-      websiteToGhlDiff,
-      websiteToZenotiDiff,
-      websiteToGhlMatchRate: pct(ghlMatches, unique) ?? 0,
-      websiteToZenotiMatchRate: pct(zenotiMatches, unique) ?? 0,
-      status: computeAuditStatus(unique, 0, ghlMatches, zenotiMatches),
-      lastSubmissionAt: lastSub?.createdAtSource?.toISOString() ?? null,
+      uniqueLeads,
+      duplicateCount,
+      ghlCount: 0,
+      zenotiCount: 0,
+      websiteToGhlDiff: 0,
+      websiteToZenotiDiff: 0,
+      websiteToGhlMatchRate: 0,
+      websiteToZenotiMatchRate: 0,
+      status,
+      lastSubmissionAt:
+        lastSub?.createdAtSource?.toISOString() ??
+        lastSub?.reportDate?.toISOString() ?? null,
     });
   }
 
   return results;
 }
 
-async function getFormPhoneSet(
-  formName: string, dateWhere: object, extra: object
-): Promise<string[]> {
-  const rows = await prisma.leadSourceRecord.findMany({
-    where: { ...dateWhere, ...extra, sourceSystem: "WEBSITE", formName, isDuplicate: false },
-    select: { normalizedPhone: true, normalizedEmail: true },
-  });
-  return rows.map((r) => r.normalizedPhone ?? r.normalizedEmail ?? "").filter(Boolean);
+export async function getWebsiteDiagnostics(from?: string, to?: string) {
+  const dateFilter = buildDateFilter(from, to);
+  const dateWhere  = websiteDateWhere(dateFilter);
+  const dw = Object.keys(dateWhere).length ? dateWhere : {};
+
+  const [totalAll, websiteTotal, websiteInRange, missingDate] = await Promise.all([
+    prisma.leadSourceRecord.count(),
+    prisma.leadSourceRecord.count({ where: { sourceSystem: "WEBSITE" } }),
+    prisma.leadSourceRecord.count({ where: { ...dw, sourceSystem: "WEBSITE" } }),
+    prisma.leadSourceRecord.count({ where: { sourceSystem: "WEBSITE", createdAtSource: null } }),
+  ]);
+
+  const [earliest, latest, sample] = await Promise.all([
+    prisma.leadSourceRecord.findFirst({
+      where: { sourceSystem: "WEBSITE", createdAtSource: { not: null } },
+      orderBy: { createdAtSource: "asc" },
+      select: { createdAtSource: true },
+    }),
+    prisma.leadSourceRecord.findFirst({
+      where: { sourceSystem: "WEBSITE", createdAtSource: { not: null } },
+      orderBy: { createdAtSource: "desc" },
+      select: { createdAtSource: true },
+    }),
+    prisma.leadSourceRecord.findMany({
+      where: { sourceSystem: "WEBSITE" },
+      orderBy: { importedAt: "desc" },
+      take: 5,
+      select: {
+        id: true, sourceSystem: true, backendProvider: true,
+        formName: true, websiteFormSource: true, createdAtSource: true,
+      },
+    }),
+  ]);
+
+  return {
+    totalRecords: totalAll,
+    websiteRecords: websiteTotal,
+    websiteInDateRange: websiteInRange,
+    missingCreatedAtSource: missingDate,
+    earliestCreatedAtSource: earliest?.createdAtSource?.toISOString() ?? null,
+    latestCreatedAtSource: latest?.createdAtSource?.toISOString() ?? null,
+    sampleRecords: sample,
+  };
 }
 
 // ─── Meta Breakdown ───────────────────────────────────────────────────────────
