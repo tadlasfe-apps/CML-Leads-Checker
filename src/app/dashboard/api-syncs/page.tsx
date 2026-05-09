@@ -172,15 +172,18 @@ function ApiPullSection({
   onComplete: () => void;
   metaAccountCount?: number;
 }) {
-  const [loading, setLoading] = useState(false);
-  const [from,    setFrom]    = useState(sevenDaysAgoStr);
-  const [to,      setTo]      = useState(todayStr);
-  const [result,  setResult]  = useState<{
+  const [loading,       setLoading]       = useState(false);
+  const [from,          setFrom]          = useState(sevenDaysAgoStr);
+  const [to,            setTo]            = useState(todayStr);
+  const [result,        setResult]        = useState<{
     fetched: number; created: number; skipped: number;
     warning?: string; step?: string; partialSuccess?: boolean;
     byAccount?: Array<{ accountId: string; accountName?: string; rowsFetched: number; leadsFound: number; spend: number }>;
   } | null>(null);
-  const [error,   setError]   = useState<string | null>(null);
+  const [error,         setError]         = useState<string | null>(null);
+  const [clearConfirm,  setClearConfirm]  = useState(false);
+  const [clearLoading,  setClearLoading]  = useState(false);
+  const [clearResult,   setClearResult]   = useState<{ deleted: number } | null>(null);
 
   async function runPull() {
     setLoading(true); setResult(null); setError(null);
@@ -207,6 +210,23 @@ function ApiPullSection({
       }
     } catch (err: any) { setError(err?.message ?? "Unexpected error"); }
     setLoading(false);
+  }
+
+  async function runClear() {
+    setClearLoading(true);
+    setClearResult(null);
+    setError(null);
+    try {
+      const res  = await fetch("/api/sync/meta/clear", { method: "POST" });
+      const json = await res.json();
+      if (json.error) setError(json.error);
+      else {
+        setClearResult({ deleted: json.deleted ?? 0 });
+        setClearConfirm(false);
+        onComplete();
+      }
+    } catch (err: any) { setError(err?.message ?? "Unexpected error"); }
+    setClearLoading(false);
   }
 
   if (!configured) return <NotConfigured reason={notConfiguredReason ?? "Configure credentials in .env to enable API pulls."} />;
@@ -274,6 +294,57 @@ function ApiPullSection({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Clear Meta Records (Meta only) */}
+      {isMeta && (
+        <div className="border-t pt-3 mt-1 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Data Management</p>
+          {!clearConfirm ? (
+            <Button
+              size="sm" variant="outline"
+              onClick={() => { setClearConfirm(true); setClearResult(null); setError(null); }}
+              className="flex items-center gap-1.5 text-xs h-7 border-red-300 text-red-600 hover:bg-red-50"
+            >
+              <XCircle className="w-3 h-3" /> Clear Meta Records
+            </Button>
+          ) : (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 space-y-2">
+              <p className="text-xs text-red-800 font-medium">
+                This will permanently delete all Meta records from the checker. Website, GHL, and Zenoti records are not affected.
+              </p>
+              <p className="text-xs text-red-700">
+                After clearing, re-pull Meta data to reload with account IDs.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={runClear}
+                  disabled={clearLoading}
+                  className="flex items-center gap-1.5 text-xs h-7 bg-red-600 hover:bg-red-700 text-white"
+                >
+                  {clearLoading ? <><Loader2 className="w-3 h-3 animate-spin" /> Clearing…</> : "Confirm — Clear Meta Records"}
+                </Button>
+                <Button
+                  size="sm" variant="outline"
+                  onClick={() => setClearConfirm(false)}
+                  disabled={clearLoading}
+                  className="text-xs h-7"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+          {clearResult && (
+            <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 flex items-center gap-2">
+              <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0" />
+              <span className="text-xs text-green-800">
+                Cleared <strong>{clearResult.deleted}</strong> Meta record{clearResult.deleted !== 1 ? "s" : ""}. Re-pull to reload with account IDs.
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

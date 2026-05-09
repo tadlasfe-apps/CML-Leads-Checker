@@ -170,6 +170,17 @@ function MetaLeadsPageInner() {
           <span>Only <code className="font-mono bg-background px-1 rounded">action_type = lead</code> is counted. Other Meta action types (onsite_conversion.lead_grouped, etc.) are stored in raw data but excluded from totals.</span>
         </div>
 
+        {/* Legacy records note */}
+        {byAdAccount.some((a: any) => a.accountId === "unknown") && (
+          <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+            <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-600" />
+            <span>
+              <strong>Unknown ad account</strong> means older Meta records do not have account ID/name stored.
+              Go to <strong>Data Pulls → Meta Lead Results → Clear Meta Records</strong>, then re-pull to fix.
+            </span>
+          </div>
+        )}
+
         {/* Meta Leads by Ad Account table */}
         {byAdAccount.length > 0 && (
           <Card>

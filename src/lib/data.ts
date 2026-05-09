@@ -659,7 +659,9 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
     byResultType.set(rt, (byResultType.get(rt) ?? 0) + leads);
 
     const acctId = r.metaAdAccountId ?? "unknown";
-    const acctName = r.metaAdAccountName ?? acctId;
+    const acctName = r.metaAdAccountId
+      ? (r.metaAdAccountName ?? r.metaAdAccountId)
+      : "Unknown / legacy Meta records";
     const acctExisting = byAdAccount.get(acctId) ?? { accountId: acctId, accountName: acctName, leads: 0, spend: 0, campaignSet: new Set<string>() };
     acctExisting.leads += leads;
     acctExisting.spend += spend;
@@ -671,7 +673,7 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
     rows,
     totalLeads,
     totalSpend,
-    adAccountCount: byAdAccount.size,
+    adAccountCount: Array.from(byAdAccount.keys()).filter((k) => k !== "unknown").length,
     byCampaign: Array.from(byCampaign.entries())
       .map(([campaign, v]) => ({ campaign, leads: v.leads, spend: v.spend, accountId: v.accountId, accountName: v.accountName }))
       .sort((a, b) => b.leads - a.leads),
