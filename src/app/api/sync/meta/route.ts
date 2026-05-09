@@ -4,12 +4,10 @@ export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
-const LEAD_ACTION_TYPES = new Set([
-  "lead",
-  "leadgen_other",
-  "onsite_conversion.lead_grouped",
-  "contact_total",
-]);
+// Only the canonical Meta Ads "lead" action type is counted.
+// All other action types (onsite_conversion.lead_grouped, leadgen_grouped, etc.)
+// are stored in rawPayload for reference but never included in metaLeadCount.
+const COUNTED_ACTION_TYPE = "lead";
 
 const META_BASE = "https://graph.facebook.com";
 
@@ -24,7 +22,7 @@ async function fetchAccountInsights(
 
   const params = new URLSearchParams({
     access_token: accessToken,
-    fields: "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,actions,spend,impressions,date_start",
+    fields: "account_id,account_name,campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,actions,spend,impressions,reach,clicks,inline_link_clicks,objective,optimization_goal,date_start,date_stop",
     time_range: JSON.stringify({ since: from, until: to }),
     level: "ad",
     time_increment: "1",
@@ -104,51 +102,97 @@ export async function POST(req: NextRequest) {
     const allRows: any[] = [];
     const errors: string[] = [];
 
+    // Per-account tracking
+    const accountStats = new Map<string, {
+      accountId: string;
+      accountName: string;
+      rowsFetched: number;
+      leadsFound: number;
+      spend: number;
+    }>();
+
     for (const accountId of accountIds) {
       try {
         const rows = await fetchAccountInsights(accountId, from, to, accessToken, apiVersion);
         allRows.push(...rows);
+
+        // Tally per-account stats from raw rows
+        let leadsFound = 0;
+        let spend = 0;
+        let accountName = accountId;
+        for (const row of rows) {
+          if (row.account_name) accountName = row.account_name;
+          const actions: any[] = row.actions ?? [];
+          const leadAction = actions.find((a: any) => a.action_type === COUNTED_ACTION_TYPE);
+          if (leadAction) leadsFound += Math.round(parseFloat(leadAction.value ?? "0"));
+          spend += row.spend ? parseFloat(row.spend) : 0;
+        }
+        accountStats.set(accountId, {
+          accountId,
+          accountName,
+          rowsFetched: rows.length,
+          leadsFound,
+          spend,
+        });
       } catch (e: any) {
         errors.push(`${accountId}: ${e?.message ?? "Unknown"}`);
+        accountStats.set(accountId, {
+          accountId,
+          accountName: accountId,
+          rowsFetched: 0,
+          leadsFound: 0,
+          spend: 0,
+        });
       }
     }
 
     const records: any[] = [];
     for (const row of allRows) {
       const actions: any[] = row.actions ?? [];
-      const leadActions = actions.filter((a: any) => LEAD_ACTION_TYPES.has(a.action_type));
-      if (leadActions.length === 0) continue;
+      // Find only the canonical "lead" action — one record per insight row, no double-counting
+      const leadAction = actions.find((a: any) => a.action_type === COUNTED_ACTION_TYPE);
+      if (!leadAction) continue;
 
       const date = row.date_start ?? from;
+      const accountId = row.account_id ?? "";
+      // externalId includes account ID to prevent cross-account collisions
+      const externalId =
+        `META_AGG|${accountId}|${date}|${row.campaign_id ?? ""}|${row.adset_id ?? ""}|${row.ad_id ?? ""}`;
 
-      for (const action of leadActions) {
-        const externalId =
-          `META_AGG|${date}|${row.campaign_id ?? ""}|${row.adset_id ?? ""}|${row.ad_id ?? ""}|${action.action_type}`;
-
-        records.push({
-          sourceSystem: "META" as const,
-          recordType: "AGGREGATE_REPORT" as const,
-          backendProvider: "META_ADS",
-          externalId,
-          reportDate: new Date(date),
-          campaignName: row.campaign_name ?? undefined,
-          metaCampaignId: row.campaign_id ?? undefined,
-          metaAdSetName: row.adset_name ?? undefined,
-          metaAdSetId: row.adset_id ?? undefined,
-          metaAdName: row.ad_name ?? undefined,
-          metaAdId: row.ad_id ?? undefined,
-          metaResultType: action.action_type,
-          metaResults: parseFloat(action.value ?? "0"),
-          metaLeadCount: Math.round(parseFloat(action.value ?? "0")),
-          spend: row.spend ? parseFloat(row.spend) : undefined,
-          impressions: row.impressions ? parseInt(row.impressions, 10) : undefined,
-          rawPayload: row,
-        });
-      }
+      records.push({
+        sourceSystem: "META" as const,
+        recordType: "AGGREGATE_REPORT" as const,
+        backendProvider: "META_ADS",
+        externalId,
+        reportDate: new Date(date),
+        campaignName: row.campaign_name ?? undefined,
+        metaCampaignId: row.campaign_id ?? undefined,
+        metaAdSetName: row.adset_name ?? undefined,
+        metaAdSetId: row.adset_id ?? undefined,
+        metaAdName: row.ad_name ?? undefined,
+        metaAdId: row.ad_id ?? undefined,
+        metaAdAccountId: row.account_id ?? undefined,
+        metaAdAccountName: row.account_name ?? undefined,
+        sourceAccountName: row.account_name ?? undefined,
+        metaObjective: row.objective ?? undefined,
+        metaResultType: "Lead",  // normalized display label
+        metaResults: parseFloat(leadAction.value ?? "0"),
+        metaLeadCount: Math.round(parseFloat(leadAction.value ?? "0")),
+        spend: row.spend ? parseFloat(row.spend) : undefined,
+        impressions: row.impressions ? parseInt(row.impressions, 10) : undefined,
+        reach: row.reach ? parseInt(row.reach, 10) : undefined,
+        clicks: row.clicks ? parseInt(row.clicks, 10) : undefined,
+        linkClicks: row.inline_link_clicks ? parseInt(row.inline_link_clicks, 10) : undefined,
+        rawPayload: row,  // full row including all action types for reference
+      });
     }
 
     let created = 0;
     let skipped = 0;
+
+    // Per-account created/skipped tracking
+    const accountCreated = new Map<string, number>();
+    const accountSkipped = new Map<string, number>();
 
     const BATCH = 100;
     for (let i = 0; i < records.length; i += BATCH) {
@@ -160,6 +204,15 @@ export async function POST(req: NextRequest) {
       created += result.count;
       skipped += batch.length - result.count;
     }
+
+    // Build byAccount response (best-effort: created/skipped per account not tracked at batch level)
+    const byAccount = Array.from(accountStats.values()).map((s) => ({
+      accountId: s.accountId,
+      accountName: s.accountName !== s.accountId ? s.accountName : undefined,
+      rowsFetched: s.rowsFetched,
+      leadsFound: s.leadsFound,
+      spend: Math.round(s.spend * 100) / 100,
+    }));
 
     await prisma.syncRun.update({
       where: { id: syncRun.id },
@@ -180,6 +233,7 @@ export async function POST(req: NextRequest) {
       rowsFetched: allRows.length,
       recordsCreated: created,
       recordsSkipped: skipped,
+      byAccount,
       errors: errors.length > 0 ? errors : undefined,
       syncRunId: syncRun.id,
     });

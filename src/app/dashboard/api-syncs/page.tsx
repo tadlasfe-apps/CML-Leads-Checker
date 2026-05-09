@@ -165,11 +165,12 @@ function NotConfigured({ reason }: { reason: string }) {
 // ─── Generic API pull section (WEBSITE, META) ─────────────────────────────────
 
 function ApiPullSection({
-  apiLabel, endpoint, configured, notConfiguredReason, onComplete,
+  apiLabel, endpoint, configured, notConfiguredReason, onComplete, metaAccountCount,
 }: {
   apiLabel: string; endpoint: string;
   configured: boolean; notConfiguredReason?: string;
   onComplete: () => void;
+  metaAccountCount?: number;
 }) {
   const [loading, setLoading] = useState(false);
   const [from,    setFrom]    = useState(sevenDaysAgoStr);
@@ -177,6 +178,7 @@ function ApiPullSection({
   const [result,  setResult]  = useState<{
     fetched: number; created: number; skipped: number;
     warning?: string; step?: string; partialSuccess?: boolean;
+    byAccount?: Array<{ accountId: string; accountName?: string; rowsFetched: number; leadsFound: number; spend: number }>;
   } | null>(null);
   const [error,   setError]   = useState<string | null>(null);
 
@@ -199,6 +201,7 @@ function ApiPullSection({
           warning:        json.warning ?? undefined,
           step:           json.step ?? undefined,
           partialSuccess: !!json.partialSuccess,
+          byAccount:      json.byAccount ?? undefined,
         });
         onComplete();
       }
@@ -209,10 +212,16 @@ function ApiPullSection({
   if (!configured) return <NotConfigured reason={notConfiguredReason ?? "Configure credentials in .env to enable API pulls."} />;
 
   const isPartial = result?.partialSuccess;
+  const isMeta = endpoint.includes("/meta");
 
   return (
     <div className="border-t pt-3 mt-3 space-y-2">
       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">API Pull</p>
+      {isMeta && metaAccountCount != null && metaAccountCount > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {metaAccountCount} ad account{metaAccountCount !== 1 ? "s" : ""} configured
+        </p>
+      )}
       <div className="flex items-center gap-2 flex-wrap">
         <DateRangeInputs from={from} to={to} onFrom={setFrom} onTo={setTo} />
         <Button size="sm" variant="outline" onClick={runPull} disabled={loading} className="flex items-center gap-1.5 text-xs h-7">
@@ -242,6 +251,28 @@ function ApiPullSection({
           <div className="text-xs text-amber-800 space-y-0.5">
             <p className="font-medium">Post-processing warning{result.step ? ` (step: ${result.step})` : ""}</p>
             <p>{result.warning}</p>
+          </div>
+        </div>
+      )}
+      {/* Per-account breakdown (Meta only) */}
+      {result?.byAccount && result.byAccount.length > 0 && (
+        <div className="rounded-md border bg-muted/20 overflow-hidden">
+          <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b uppercase tracking-wide">
+            Per-Account Results
+          </p>
+          <div className="divide-y">
+            {result.byAccount.map((acct) => (
+              <div key={acct.accountId} className="px-3 py-1.5 grid grid-cols-2 gap-x-4 gap-y-0 text-xs">
+                <span className="text-muted-foreground">Account</span>
+                <span className="font-mono truncate">{acct.accountName ?? acct.accountId}</span>
+                <span className="text-muted-foreground">Rows fetched</span>
+                <span className="tabular-nums">{acct.rowsFetched}</span>
+                <span className="text-muted-foreground">Leads found</span>
+                <span className="tabular-nums font-semibold text-purple-600">{acct.leadsFound}</span>
+                <span className="text-muted-foreground">Spend</span>
+                <span className="tabular-nums">${acct.spend.toFixed(2)}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -718,7 +749,8 @@ export default function DataPullsPage() {
     meta: boolean;
     ghl: boolean;
     ghlMissingPipelineId: boolean;
-  }>({ website: false, meta: false, ghl: false, ghlMissingPipelineId: false });
+    metaAccountCount: number;
+  }>({ website: false, meta: false, ghl: false, ghlMissingPipelineId: false, metaAccountCount: 0 });
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -868,6 +900,7 @@ export default function DataPullsPage() {
                       configured={apiConfigured(src)}
                       notConfiguredReason={notConfiguredReason(src)}
                       onComplete={fetchData}
+                      metaAccountCount={src === "META" ? apiStatus.metaAccountCount : undefined}
                     />
                   )}
 

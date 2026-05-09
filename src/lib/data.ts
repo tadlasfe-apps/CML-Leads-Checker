@@ -1,4 +1,5 @@
 import prisma from "./prisma";
+import { EXCLUDED_META_ACTION_TYPES } from "./normalization";
 import {
   format, startOfDay, endOfDay, startOfWeek,
   startOfMonth, startOfQuarter,
@@ -118,7 +119,7 @@ export async function getOverviewKPIs(
         where: { ...baseWhere, ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
       }),
       prisma.leadSourceRecord.aggregate({
-        where: { ...baseWhere, ...(dateFilter ? { reportDate: dateFilter } : {}), sourceSystem: "META" },
+        where: { ...baseWhere, ...(dateFilter ? { reportDate: dateFilter } : {}), sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
         _sum: { metaLeadCount: true },
       }),
       prisma.leadSourceRecord.count({
@@ -192,7 +193,8 @@ export async function getLeadTimeline(
   from?: string, to?: string,
   grouping: DateGrouping = "daily",
   tz: ReportingTimezone = "America/Toronto",
-  clinic?: string, service?: string
+  clinic?: string, service?: string,
+  adAccountId?: string,
 ): Promise<TimelineEntry[]> {
   const baseWhere = {
     ...(clinic ? { clinicLocationNormalized: clinic } : {}),
@@ -211,6 +213,8 @@ export async function getLeadTimeline(
         ...baseWhere,
         ...(dateFilter ? { reportDate: dateFilter } : {}),
         sourceSystem: "META",
+        metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES },
+        ...(adAccountId ? { metaAdAccountId: adAccountId } : {}),
       },
       select: { reportDate: true, createdAtSource: true, metaLeadCount: true },
     }),
@@ -274,9 +278,10 @@ export async function getSourceComparison(
   from?: string, to?: string,
   grouping: DateGrouping = "daily",
   tz: ReportingTimezone = "America/Toronto",
-  clinic?: string, service?: string
+  clinic?: string, service?: string,
+  adAccountId?: string,
 ): Promise<SourceComparisonRow[]> {
-  const timeline = await getLeadTimeline(from, to, grouping, tz, clinic, service);
+  const timeline = await getLeadTimeline(from, to, grouping, tz, clinic, service, adAccountId);
 
   return timeline.map((t) => {
     const src = t.totalSource;
@@ -326,7 +331,7 @@ export async function getSourceComparisonDrilldown(
     }),
     prisma.leadSourceRecord.groupBy({
       by: [groupField as any],
-      where: { ...metaDateWhere, sourceSystem: "META" },
+      where: { ...metaDateWhere, sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
       _sum: { metaLeadCount: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -401,7 +406,7 @@ export async function getClinicBreakdown(
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...metaDateWhere, sourceSystem: "META" },
+      where: { ...metaDateWhere, sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
       _sum: { metaLeadCount: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -474,7 +479,7 @@ export async function getServiceBreakdown(
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["serviceNormalized"],
-      where: { ...metaDateWhere, ...clinicWhere, sourceSystem: "META" },
+      where: { ...metaDateWhere, ...clinicWhere, sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
       _sum: { metaLeadCount: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -607,28 +612,36 @@ async function getFormPhoneSet(
 
 // ─── Meta Breakdown ───────────────────────────────────────────────────────────
 
-export async function getMetaBreakdown(from?: string, to?: string) {
+export async function getMetaBreakdown(from?: string, to?: string, adAccountId?: string) {
   const dateFilter = buildDateFilter(from, to);
   const dateWhere = dateFilter ? { reportDate: dateFilter } : {};
 
   const rows = await prisma.leadSourceRecord.findMany({
-    where: { ...dateWhere, sourceSystem: "META" },
+    where: {
+      ...dateWhere,
+      sourceSystem: "META",
+      metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES },
+      ...(adAccountId ? { metaAdAccountId: adAccountId } : {}),
+    },
     select: {
       reportDate: true, createdAtSource: true,
       campaignName: true, metaCampaignId: true,
       metaAdSetName: true, metaAdSetId: true,
       metaAdName: true, metaAdId: true,
+      metaAdAccountId: true, metaAdAccountName: true,
       metaObjective: true, metaConversionGoal: true, metaResultType: true,
       metaResults: true, metaLeadCount: true,
       spend: true, costPerResult: true,
-      impressions: true, clinicLocationNormalized: true, serviceNormalized: true,
+      impressions: true, reach: true, clicks: true, linkClicks: true,
+      clinicLocationNormalized: true, serviceNormalized: true,
     },
     orderBy: { reportDate: "desc" },
   });
 
-  // Aggregate by campaign
-  const byCampaign = new Map<string, { leads: number; spend: number }>();
+  // Aggregate by campaign, result type, and ad account
+  const byCampaign = new Map<string, { leads: number; spend: number; accountId: string | null; accountName: string | null }>();
   const byResultType = new Map<string, number>();
+  const byAdAccount = new Map<string, { accountId: string; accountName: string; leads: number; spend: number; campaignSet: Set<string> }>();
   let totalLeads = 0;
   let totalSpend = 0;
 
@@ -639,22 +652,34 @@ export async function getMetaBreakdown(from?: string, to?: string) {
     totalSpend += spend;
 
     const camp = r.campaignName ?? "Unknown Campaign";
-    const existing = byCampaign.get(camp) ?? { leads: 0, spend: 0 };
-    byCampaign.set(camp, { leads: existing.leads + leads, spend: existing.spend + spend });
+    const existing = byCampaign.get(camp) ?? { leads: 0, spend: 0, accountId: r.metaAdAccountId ?? null, accountName: r.metaAdAccountName ?? null };
+    byCampaign.set(camp, { leads: existing.leads + leads, spend: existing.spend + spend, accountId: existing.accountId, accountName: existing.accountName });
 
     const rt = r.metaResultType ?? "Unknown";
     byResultType.set(rt, (byResultType.get(rt) ?? 0) + leads);
+
+    const acctId = r.metaAdAccountId ?? "unknown";
+    const acctName = r.metaAdAccountName ?? acctId;
+    const acctExisting = byAdAccount.get(acctId) ?? { accountId: acctId, accountName: acctName, leads: 0, spend: 0, campaignSet: new Set<string>() };
+    acctExisting.leads += leads;
+    acctExisting.spend += spend;
+    if (r.campaignName) acctExisting.campaignSet.add(r.campaignName);
+    byAdAccount.set(acctId, acctExisting);
   }
 
   return {
     rows,
     totalLeads,
     totalSpend,
+    adAccountCount: byAdAccount.size,
     byCampaign: Array.from(byCampaign.entries())
-      .map(([campaign, v]) => ({ campaign, ...v }))
+      .map(([campaign, v]) => ({ campaign, leads: v.leads, spend: v.spend, accountId: v.accountId, accountName: v.accountName }))
       .sort((a, b) => b.leads - a.leads),
     byResultType: Array.from(byResultType.entries())
       .map(([resultType, leads]) => ({ resultType, leads }))
+      .sort((a, b) => b.leads - a.leads),
+    byAdAccount: Array.from(byAdAccount.values())
+      .map(({ campaignSet, ...rest }) => ({ ...rest, campaignCount: campaignSet.size }))
       .sort((a, b) => b.leads - a.leads),
   };
 }

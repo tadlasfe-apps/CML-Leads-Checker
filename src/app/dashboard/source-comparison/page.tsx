@@ -37,9 +37,11 @@ function SourceComparisonPageInner() {
     return { preset, from: format(r.from, "yyyy-MM-dd"), to: format(r.to, "yyyy-MM-dd") };
   });
 
-  const [groupBy,  setGroupBy]  = useState<DateGrouping>((sp.get("groupBy") as DateGrouping) || "daily");
-  const [timezone, setTimezone] = useState<ReportingTimezone>((sp.get("timezone") as ReportingTimezone) || "America/Toronto");
+  const [groupBy,      setGroupBy]      = useState<DateGrouping>((sp.get("groupBy") as DateGrouping) || "daily");
+  const [timezone,     setTimezone]     = useState<ReportingTimezone>((sp.get("timezone") as ReportingTimezone) || "America/Toronto");
   const [statusFilter, setStatusFilter] = useState(sp.get("status") || "all");
+  const [adAccountId,  setAdAccountId]  = useState(sp.get("adAccountId") || "");
+  const [metaAccounts, setMetaAccounts] = useState<Array<{ accountId: string; accountName: string }>>([]);
   const [sortField, setSortField] = useState("periodStart");
   const [sortDir,   setSortDir]   = useState<"asc" | "desc">("desc");
   const [rows, setRows]  = useState<SourceComparisonRow[]>([]);
@@ -47,8 +49,9 @@ function SourceComparisonPageInner() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [drillData, setDrillData] = useState<any[] | null>(null);
 
-  const syncUrl = useCallback((dr: typeof dateRange, gb: DateGrouping, tz: ReportingTimezone, status: string) => {
+  const syncUrl = useCallback((dr: typeof dateRange, gb: DateGrouping, tz: ReportingTimezone, status: string, acct: string) => {
     const p = new URLSearchParams({ preset: dr.preset || "custom", from: dr.from || "", to: dr.to || "", groupBy: gb, timezone: tz, status });
+    if (acct) p.set("adAccountId", acct);
     router.replace(`?${p}`, { scroll: false });
   }, [router]);
 
@@ -56,10 +59,22 @@ function SourceComparisonPageInner() {
     if (!dateRange.from || !dateRange.to) return;
     setLoading(true);
     const params = new URLSearchParams({ from: dateRange.from, to: dateRange.to, groupBy, timezone });
-    const res = await fetch(`/api/source-comparison?${params}`);
+    if (adAccountId) params.set("adAccountId", adAccountId);
+    const [res, metaRes] = await Promise.all([
+      fetch(`/api/source-comparison?${params}`),
+      metaAccounts.length === 0
+        ? fetch(`/api/meta-leads?from=${dateRange.from}&to=${dateRange.to}`)
+        : Promise.resolve(null),
+    ]);
     setRows(await res.json());
+    if (metaRes) {
+      const metaData = await metaRes.json();
+      if (metaData?.byAdAccount?.length > 0) {
+        setMetaAccounts(metaData.byAdAccount.map((a: any) => ({ accountId: a.accountId, accountName: a.accountName ?? a.accountId })));
+      }
+    }
     setLoading(false);
-  }, [dateRange, groupBy, timezone]);
+  }, [dateRange, groupBy, timezone, adAccountId, metaAccounts.length]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -70,17 +85,22 @@ function SourceComparisonPageInner() {
       next = { preset: v.preset, from: format(from, "yyyy-MM-dd"), to: format(to, "yyyy-MM-dd") };
     } else next = v;
     setDateRange(next);
-    syncUrl(next, groupBy, timezone, statusFilter);
+    syncUrl(next, groupBy, timezone, statusFilter, adAccountId);
   }
 
   function handleGroupBy(val: string) {
     const gb = val as DateGrouping;
-    setGroupBy(gb); syncUrl(dateRange, gb, timezone, statusFilter);
+    setGroupBy(gb); syncUrl(dateRange, gb, timezone, statusFilter, adAccountId);
   }
 
   function handleTimezone(val: string) {
     const tz = val as ReportingTimezone;
-    setTimezone(tz); syncUrl(dateRange, groupBy, tz, statusFilter);
+    setTimezone(tz); syncUrl(dateRange, groupBy, tz, statusFilter, adAccountId);
+  }
+
+  function handleAdAccount(val: string) {
+    setAdAccountId(val);
+    syncUrl(dateRange, groupBy, timezone, statusFilter, val);
   }
 
   async function toggleDrilldown(row: SourceComparisonRow) {
@@ -144,7 +164,7 @@ function SourceComparisonPageInner() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); syncUrl(dateRange, groupBy, timezone, v); }}>
+            <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); syncUrl(dateRange, groupBy, timezone, v, adAccountId); }}>
               <SelectTrigger className="w-[170px]"><SelectValue placeholder="All statuses" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Statuses</SelectItem>
@@ -157,6 +177,20 @@ function SourceComparisonPageInner() {
               </SelectContent>
             </Select>
           </div>
+          {metaAccounts.length > 0 && (
+            <select
+              value={adAccountId}
+              onChange={(e) => handleAdAccount(e.target.value)}
+              className="border rounded px-2 py-1 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring h-9"
+            >
+              <option value="">All Meta Accounts</option>
+              {metaAccounts.map((a) => (
+                <option key={a.accountId} value={a.accountId}>
+                  {a.accountName !== a.accountId ? `${a.accountName} (${a.accountId})` : a.accountId}
+                </option>
+              ))}
+            </select>
+          )}
           <ExportButton endpoint="/api/export" filename="source-comparison.csv"
             params={{ type: "source-comparison", from: dateRange.from || "", to: dateRange.to || "" }} />
         </div>

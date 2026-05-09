@@ -247,3 +247,23 @@ export function isUnmappedService(value: string): boolean {
 export function safeLocaleCompare(a: unknown, b: unknown): number {
   return toSafeString(a).localeCompare(toSafeString(b));
 }
+
+// Meta action types that must NEVER be counted as Meta Leads.
+// Only action_type = "lead" is valid. These are excluded from all metaLeadCount queries
+// to prevent double-counting with onsite_conversion.lead_grouped and similar variants.
+export const EXCLUDED_META_ACTION_TYPES: string[] = [
+  "onsite_conversion.lead_grouped",
+  "leadgen_grouped",
+  "offsite_conversion.fb_pixel_lead",
+  "offsite_conversion.lead",
+  "website_lead",
+  "omni_lead",
+  "onsite_conversion.lead",
+  "onsite_conversion.messaging_lead",
+  "onsite_conversion.messaging_conversation_started_7d",
+  "onsite_conversion.messaging_first_reply",
+  "onsite_conversion.messaging_user_subscribed",
+  "offsite_conversion.fb_pixel_custom",
+  "leadgen_other",
+  "contact_total",
+];

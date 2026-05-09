@@ -126,6 +126,9 @@ model LeadSourceRecord {
   metaAdSetId              String?
   metaAdName               String?
   metaAdId                 String?
+  metaAdAccountId          String?
+  metaAdAccountName        String?
+  sourceAccountName        String?
 
   // GHL fields
   ghlContactId             String?
@@ -174,6 +177,7 @@ model LeadSourceRecord {
   @@index([campaignName, createdAtSource])
   @@index([metaResultType, reportDate])
   @@index([metaCampaignId, reportDate])
+  @@index([metaAdAccountId, reportDate])
   @@index([ghlPipelineId, createdAtSource])
   @@index([zenotiCenterName, createdAtSource])
   @@index([zenotiLeadId])

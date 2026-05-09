@@ -15,6 +15,10 @@ export async function GET() {
     process.env.META_AD_ACCOUNT_IDS
   );
 
+  const metaAccountCount = meta
+    ? (process.env.META_AD_ACCOUNT_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean).length
+    : 0;
+
   const ghl = !!(
     process.env.GHL_API_KEY &&
     process.env.GHL_LOCATION_ID &&
@@ -27,5 +31,5 @@ export async function GET() {
     !process.env.GHL_LEAD_INQUIRY_PIPELINE_ID
   );
 
-  return NextResponse.json({ website, meta, ghl, ghlMissingPipelineId });
+  return NextResponse.json({ website, meta, ghl, ghlMissingPipelineId, metaAccountCount });
 }
