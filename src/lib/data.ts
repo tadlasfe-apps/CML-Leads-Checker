@@ -339,29 +339,24 @@ export async function getSourceComparisonDrilldown(
   else if (by === "websiteFormSource") groupField = "websiteFormSource";
   else groupField = "campaignName";
 
-  const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
-    prisma.leadSourceRecord.groupBy({
-      by: [groupField as any],
-      where: { ...webDrillDW, sourceSystem: "WEBSITE", isDuplicate: false,
-        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: [groupField as any],
-      where: { ...metaDateWhere, sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
-      _sum: { metaLeadCount: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: [groupField as any],
-      where: { ...ghlDrillDW, sourceSystem: "GHL" },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: [groupField as any],
-      where: { ...ghlDrillDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
-      _count: { id: true },
-    }),
-  ]);
+  // Sequential findMany + JS aggregation — avoids exhausting pgbouncer connection pool
+  const websiteRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...webDrillDW, sourceSystem: "WEBSITE", isDuplicate: false,
+      websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
+    select: { [groupField]: true } as any,
+  });
+  const metaRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...metaDateWhere, sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
+    select: { [groupField]: true, metaLeadCount: true } as any,
+  });
+  const ghlRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlDrillDW, sourceSystem: "GHL" },
+    select: { [groupField]: true } as any,
+  });
+  const zenotiRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlDrillDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
+    select: { [groupField]: true } as any,
+  });
 
   const labels = new Set<string>();
   const wb: Record<string, number> = {};
@@ -369,21 +364,21 @@ export async function getSourceComparisonDrilldown(
   const gb: Record<string, number> = {};
   const zb: Record<string, number> = {};
 
-  for (const r of websiteRows) {
+  for (const r of websiteRecs) {
     const k = (r as any)[groupField] ?? "Unknown";
-    labels.add(k); wb[k] = r._count.id;
+    labels.add(k); wb[k] = (wb[k] ?? 0) + 1;
   }
-  for (const r of metaRows) {
+  for (const r of metaRecs) {
     const k = (r as any)[groupField] ?? "Unknown";
-    labels.add(k); mb[k] = r._sum.metaLeadCount ?? 0;
+    labels.add(k); mb[k] = (mb[k] ?? 0) + ((r as any).metaLeadCount ?? 0);
   }
-  for (const r of ghlRows) {
+  for (const r of ghlRecs) {
     const k = (r as any)[groupField] ?? "Unknown";
-    labels.add(k); gb[k] = r._count.id;
+    labels.add(k); gb[k] = (gb[k] ?? 0) + 1;
   }
-  for (const r of zenotiRows) {
+  for (const r of zenotiRecs) {
     const k = (r as any)[groupField] ?? "Unknown";
-    labels.add(k); zb[k] = r._count.id;
+    labels.add(k); zb[k] = (zb[k] ?? 0) + 1;
   }
 
   return Array.from(labels).map((label) => {
@@ -416,35 +411,26 @@ export async function getClinicBreakdown(
   const ghlClinicDW   = dateFilter ? { createdAtSource: dateFilter } : {};
   const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
 
-  const [websiteRows, metaRows, ghlRows, zenotiRows, dupeRows] = await Promise.all([
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized"],
-      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: false,
-        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized"],
-      where: { ...metaDateWhere, sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
-      _sum: { metaLeadCount: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized"],
-      where: { ...ghlClinicDW, sourceSystem: "GHL" },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized"],
-      where: { ...ghlClinicDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["clinicLocationNormalized"],
-      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: true,
-        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
-      _count: { id: true },
-    }),
-  ]);
+  // Run sequentially — avoids exhausting Supabase pgbouncer connection pool
+  // (Promise.all with 5 concurrent groupBy queries can hit the pool_size limit)
+  const websiteRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...webClinicDW, sourceSystem: "WEBSITE",
+      websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
+    select: { clinicLocationNormalized: true, isDuplicate: true },
+  });
+  const metaRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...metaDateWhere, sourceSystem: "META",
+      metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
+    select: { clinicLocationNormalized: true, metaLeadCount: true },
+  });
+  const ghlRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlClinicDW, sourceSystem: "GHL" },
+    select: { clinicLocationNormalized: true },
+  });
+  const zenotiRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlClinicDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
+    select: { clinicLocationNormalized: true },
+  });
 
   const clinics = new Set<string>();
   const wb: Record<string, number> = {};
@@ -453,11 +439,27 @@ export async function getClinicBreakdown(
   const zb: Record<string, number> = {};
   const db: Record<string, number> = {};
 
-  for (const r of websiteRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); wb[k] = r._count.id; }
-  for (const r of metaRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); mb[k] = r._sum.metaLeadCount ?? 0; }
-  for (const r of ghlRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); gb[k] = r._count.id; }
-  for (const r of zenotiRows) { const k = r.clinicLocationNormalized ?? "Unknown"; clinics.add(k); zb[k] = r._count.id; }
-  for (const r of dupeRows) { const k = r.clinicLocationNormalized ?? "Unknown"; db[k] = r._count.id; }
+  for (const r of websiteRecs) {
+    const k = r.clinicLocationNormalized ?? "Unknown";
+    clinics.add(k);
+    if (r.isDuplicate) { db[k] = (db[k] ?? 0) + 1; }
+    else               { wb[k] = (wb[k] ?? 0) + 1; }
+  }
+  for (const r of metaRecs) {
+    const k = r.clinicLocationNormalized ?? "Unknown";
+    clinics.add(k);
+    mb[k] = (mb[k] ?? 0) + (r.metaLeadCount ?? 0);
+  }
+  for (const r of ghlRecs) {
+    const k = r.clinicLocationNormalized ?? "Unknown";
+    clinics.add(k);
+    gb[k] = (gb[k] ?? 0) + 1;
+  }
+  for (const r of zenotiRecs) {
+    const k = r.clinicLocationNormalized ?? "Unknown";
+    clinics.add(k);
+    zb[k] = (zb[k] ?? 0) + 1;
+  }
 
   return Array.from(clinics).map((clinic) => {
     const web = wb[clinic] ?? 0;
@@ -492,29 +494,25 @@ export async function getServiceBreakdown(
   const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
   const clinicWhere   = clinic ? { clinicLocationNormalized: clinic } : {};
 
-  const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
-    prisma.leadSourceRecord.groupBy({
-      by: ["serviceNormalized"],
-      where: { ...webSvcDW, ...clinicWhere, sourceSystem: "WEBSITE", isDuplicate: false,
-        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["serviceNormalized"],
-      where: { ...metaDateWhere, ...clinicWhere, sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
-      _sum: { metaLeadCount: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["serviceNormalized"],
-      where: { ...ghlSvcDW, ...clinicWhere, sourceSystem: "GHL" },
-      _count: { id: true },
-    }),
-    prisma.leadSourceRecord.groupBy({
-      by: ["serviceNormalized"],
-      where: { ...ghlSvcDW, ...clinicWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
-      _count: { id: true },
-    }),
-  ]);
+  // Sequential findMany + JS aggregation — avoids exhausting the pgbouncer connection pool
+  const websiteRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...webSvcDW, ...clinicWhere, sourceSystem: "WEBSITE", isDuplicate: false,
+      websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
+    select: { serviceNormalized: true },
+  });
+  const metaRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...metaDateWhere, ...clinicWhere, sourceSystem: "META",
+      metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
+    select: { serviceNormalized: true, metaLeadCount: true },
+  });
+  const ghlRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlSvcDW, ...clinicWhere, sourceSystem: "GHL" },
+    select: { serviceNormalized: true },
+  });
+  const zenotiRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlSvcDW, ...clinicWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+    select: { serviceNormalized: true },
+  });
 
   const services = new Set<string>();
   const wb: Record<string, number> = {};
@@ -522,10 +520,10 @@ export async function getServiceBreakdown(
   const gb: Record<string, number> = {};
   const zb: Record<string, number> = {};
 
-  for (const r of websiteRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); wb[k] = r._count.id; }
-  for (const r of metaRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); mb[k] = r._sum.metaLeadCount ?? 0; }
-  for (const r of ghlRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); gb[k] = r._count.id; }
-  for (const r of zenotiRows) { const k = r.serviceNormalized ?? "Other"; services.add(k); zb[k] = r._count.id; }
+  for (const r of websiteRecs) { const k = r.serviceNormalized ?? "Other"; services.add(k); wb[k] = (wb[k] ?? 0) + 1; }
+  for (const r of metaRecs)    { const k = r.serviceNormalized ?? "Other"; services.add(k); mb[k] = (mb[k] ?? 0) + (r.metaLeadCount ?? 0); }
+  for (const r of ghlRecs)     { const k = r.serviceNormalized ?? "Other"; services.add(k); gb[k] = (gb[k] ?? 0) + 1; }
+  for (const r of zenotiRecs)  { const k = r.serviceNormalized ?? "Other"; services.add(k); zb[k] = (zb[k] ?? 0) + 1; }
 
   return Array.from(services).map((service) => {
     const web = wb[service] ?? 0;
