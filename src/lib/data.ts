@@ -110,26 +110,34 @@ export async function getOverviewKPIs(
     ...(clinic ? { clinicLocationNormalized: clinic } : {}),
     ...(service ? { serviceNormalized: service } : {}),
   };
-  const dateFilter = buildDateFilter(from, to);
-  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const dateFilter   = buildDateFilter(from, to);
+  // Use simple (no-OR) date filters for counts — avoids Prisma OR runtime issues.
+  // getWebsiteForms handles the OR fallback in its own findMany.
+  const simpleDW = websiteDateWhereSimple(dateFilter);
+  const ghlDW    = dateFilter ? { createdAtSource: dateFilter } : {};
 
   const [websiteCount, metaSum, ghlCount, zenotiCount, dupeCount] =
     await Promise.all([
       prisma.leadSourceRecord.count({
-        where: { ...baseWhere, ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+        where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: false },
       }),
       prisma.leadSourceRecord.aggregate({
-        where: { ...baseWhere, ...(dateFilter ? { reportDate: dateFilter } : {}), sourceSystem: "META", metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES } },
+        where: {
+          ...baseWhere,
+          sourceSystem: "META",
+          metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES },
+          ...(dateFilter ? { reportDate: dateFilter } : {}),
+        },
         _sum: { metaLeadCount: true },
       }),
       prisma.leadSourceRecord.count({
-        where: { ...baseWhere, ...dateWhere, sourceSystem: "GHL" },
+        where: { ...baseWhere, ...ghlDW, sourceSystem: "GHL" },
       }),
       prisma.leadSourceRecord.count({
-        where: { ...baseWhere, ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+        where: { ...baseWhere, ...ghlDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
       }),
       prisma.leadSourceRecord.count({
-        where: { ...baseWhere, ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: true },
+        where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: true },
       }),
     ]);
 
@@ -142,12 +150,12 @@ export async function getOverviewKPIs(
   const [unmappedClinic, unmappedService] = await Promise.all([
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...dateWhere, clinicLocationNormalized: "Unknown" },
+      where: { ...ghlDW, clinicLocationNormalized: "Unknown" },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["serviceNormalized"],
-      where: { ...dateWhere, serviceNormalized: "Other" },
+      where: { ...ghlDW, serviceNormalized: "Other" },
       _count: { id: true },
     }),
   ]);
@@ -200,13 +208,16 @@ export async function getLeadTimeline(
     ...(clinic ? { clinicLocationNormalized: clinic } : {}),
     ...(service ? { serviceNormalized: service } : {}),
   };
-  const dateFilter = buildDateFilter(from, to);
-  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const dateFilter   = buildDateFilter(from, to);
+  // Use simple (no-OR) date filter here. getWebsiteForms already handles the
+  // reportDate fallback; for the timeline we use createdAtSource as the grouping key.
+  const simpleDW     = websiteDateWhereSimple(dateFilter);
+  const ghlDateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
 
   const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
     prisma.leadSourceRecord.findMany({
-      where: { ...baseWhere, ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
-      select: { createdAtSource: true },
+      where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: false },
+      select: { createdAtSource: true, reportDate: true },
     }),
     prisma.leadSourceRecord.findMany({
       where: {
@@ -219,11 +230,11 @@ export async function getLeadTimeline(
       select: { reportDate: true, createdAtSource: true, metaLeadCount: true },
     }),
     prisma.leadSourceRecord.findMany({
-      where: { ...baseWhere, ...dateWhere, sourceSystem: "GHL" },
+      where: { ...baseWhere, ...ghlDateWhere, sourceSystem: "GHL" },
       select: { createdAtSource: true },
     }),
     prisma.leadSourceRecord.findMany({
-      where: { ...baseWhere, ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      where: { ...baseWhere, ...ghlDateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
       select: { createdAtSource: true },
     }),
   ]);
@@ -239,8 +250,9 @@ export async function getLeadTimeline(
   }
 
   for (const r of websiteRows) {
-    if (!r.createdAtSource) continue;
-    const key = getPeriodKey(r.createdAtSource, grouping, tz);
+    const d = r.createdAtSource ?? r.reportDate;
+    if (!d) continue;
+    const key = getPeriodKey(d, grouping, tz);
     getOrCreate(key).websiteLeads++;
   }
   for (const r of metaRows) {
@@ -313,8 +325,9 @@ export async function getSourceComparisonDrilldown(
   periodStart: string, periodEnd: string,
   by: "clinic" | "service" | "websiteFormSource" | "campaign"
 ) {
-  const dateFilter = buildDateFilter(periodStart, periodEnd);
-  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const dateFilter    = buildDateFilter(periodStart, periodEnd);
+  const webDrillDW    = websiteDateWhereSimple(dateFilter);
+  const ghlDrillDW    = dateFilter ? { createdAtSource: dateFilter } : {};
   const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
 
   let groupField: string;
@@ -326,7 +339,7 @@ export async function getSourceComparisonDrilldown(
   const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
     prisma.leadSourceRecord.groupBy({
       by: [groupField as any],
-      where: { ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      where: { ...webDrillDW, sourceSystem: "WEBSITE", isDuplicate: false },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -336,12 +349,12 @@ export async function getSourceComparisonDrilldown(
     }),
     prisma.leadSourceRecord.groupBy({
       by: [groupField as any],
-      where: { ...dateWhere, sourceSystem: "GHL" },
+      where: { ...ghlDrillDW, sourceSystem: "GHL" },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
       by: [groupField as any],
-      where: { ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      where: { ...ghlDrillDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
       _count: { id: true },
     }),
   ]);
@@ -394,14 +407,15 @@ export async function getSourceComparisonDrilldown(
 export async function getClinicBreakdown(
   from?: string, to?: string
 ): Promise<ClinicBreakdownRow[]> {
-  const dateFilter = buildDateFilter(from, to);
-  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const dateFilter    = buildDateFilter(from, to);
+  const webClinicDW   = websiteDateWhereSimple(dateFilter);
+  const ghlClinicDW   = dateFilter ? { createdAtSource: dateFilter } : {};
   const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
 
   const [websiteRows, metaRows, ghlRows, zenotiRows, dupeRows] = await Promise.all([
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: false },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -411,17 +425,17 @@ export async function getClinicBreakdown(
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...dateWhere, sourceSystem: "GHL" },
+      where: { ...ghlClinicDW, sourceSystem: "GHL" },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...dateWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      where: { ...ghlClinicDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...dateWhere, sourceSystem: "WEBSITE", isDuplicate: true },
+      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: true },
       _count: { id: true },
     }),
   ]);
@@ -466,15 +480,16 @@ export async function getClinicBreakdown(
 export async function getServiceBreakdown(
   from?: string, to?: string, clinic?: string
 ): Promise<ServiceBreakdownRow[]> {
-  const dateFilter = buildDateFilter(from, to);
-  const dateWhere = dateFilter ? { createdAtSource: dateFilter } : {};
+  const dateFilter    = buildDateFilter(from, to);
+  const webSvcDW      = websiteDateWhereSimple(dateFilter);
+  const ghlSvcDW      = dateFilter ? { createdAtSource: dateFilter } : {};
   const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
-  const clinicWhere = clinic ? { clinicLocationNormalized: clinic } : {};
+  const clinicWhere   = clinic ? { clinicLocationNormalized: clinic } : {};
 
   const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
     prisma.leadSourceRecord.groupBy({
       by: ["serviceNormalized"],
-      where: { ...dateWhere, ...clinicWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      where: { ...webSvcDW, ...clinicWhere, sourceSystem: "WEBSITE", isDuplicate: false },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -484,12 +499,12 @@ export async function getServiceBreakdown(
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["serviceNormalized"],
-      where: { ...dateWhere, ...clinicWhere, sourceSystem: "GHL" },
+      where: { ...ghlSvcDW, ...clinicWhere, sourceSystem: "GHL" },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["serviceNormalized"],
-      where: { ...dateWhere, ...clinicWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
+      where: { ...ghlSvcDW, ...clinicWhere, sourceSystem: "ZENOTI", isAppointmentBased: false },
       _count: { id: true },
     }),
   ]);
@@ -525,105 +540,167 @@ export async function getServiceBreakdown(
 
 // ─── Website Forms ────────────────────────────────────────────────────────────
 
-// Builds a date filter that uses createdAtSource with reportDate as fallback
-// for WEBSITE records that may have been imported without createdAtSource.
+// Returns a Prisma where fragment that matches WEBSITE records in the date range.
+// Uses createdAtSource when set; falls back to reportDate for CSV-imported records
+// that may have been saved without createdAtSource.
+//
+// IMPORTANT: we intentionally avoid using this inside groupBy() because Prisma's
+// groupBy + OR has fragile runtime behaviour on some DB providers (Supabase/pgbouncer).
+// For groupBy we use a separate plain createdAtSource filter and merge in JS.
 function websiteDateWhere(dateFilter: ReturnType<typeof buildDateFilter>) {
   if (!dateFilter) return {};
   return {
     OR: [
       { createdAtSource: dateFilter },
-      { createdAtSource: null as null, reportDate: dateFilter },
+      // Use { equals: null } — the explicit Prisma idiom — rather than bare `null`.
+      { createdAtSource: { equals: null as null }, reportDate: dateFilter },
     ],
   };
+}
+
+// Returns a simple (no-OR) date condition suitable for groupBy queries.
+function websiteDateWhereSimple(dateFilter: ReturnType<typeof buildDateFilter>) {
+  if (!dateFilter) return {};
+  // Primary: createdAtSource. Records without a date are excluded from date-range
+  // views but will appear in an "all time" query.
+  return { createdAtSource: dateFilter };
 }
 
 export async function getWebsiteForms(
   from?: string, to?: string, clinic?: string, service?: string
 ): Promise<WebsiteFormRow[]> {
   const dateFilter = buildDateFilter(from, to);
-  const dateWhere  = websiteDateWhere(dateFilter);
   const extra = {
     ...(clinic ? { clinicLocationNormalized: clinic } : {}),
     ...(service ? { serviceNormalized: service } : {}),
   };
 
-  const forms = await prisma.leadSourceRecord.groupBy({
-    by: ["formName", "websiteFormSource", "formId", "backendProvider", "pageUrl"],
-    where: { ...extra, sourceSystem: "WEBSITE", ...(Object.keys(dateWhere).length ? dateWhere : {}) },
-    _count: { id: true },
-    orderBy: { _count: { id: "desc" } },
+  // ── Fetch matching records then group in JS ──────────────────────────────────
+  // We deliberately avoid Prisma groupBy+OR (fragile on Supabase/pgbouncer).
+  // Instead: one findMany with OR date condition, then aggregate in memory.
+  const dateCond = websiteDateWhere(dateFilter);
+
+  const records = await prisma.leadSourceRecord.findMany({
+    where: {
+      ...extra,
+      sourceSystem: "WEBSITE",
+      ...(Object.keys(dateCond).length ? dateCond : {}),
+    },
+    select: {
+      formName:          true,
+      websiteFormSource: true,
+      formId:            true,
+      backendProvider:   true,
+      pageUrl:           true,
+      isDuplicate:       true,
+      createdAtSource:   true,
+      reportDate:        true,
+    },
   });
 
+  // Group by (formName, websiteFormSource, formId, backendProvider, pageUrl)
+  type Group = {
+    formName: string;
+    websiteFormSource: string | null;
+    formId: string | null;
+    backendProvider: string | null;
+    pageUrl: string | null;
+    total: number;
+    unique: number;
+    dupes: number;
+    lastDate: Date | null;
+  };
+  const groupMap = new Map<string, Group>();
+
+  for (const r of records) {
+    // Use formName when present; fall back to formId or backendProvider so that
+    // records without a form title (e.g. GF entries when form_title is not
+    // returned by the API) are still grouped and displayed rather than dropped.
+    const displayName =
+      r.formName ||
+      (r.formId ? `Form ${r.formId}` : null) ||
+      (r.backendProvider ? `(${r.backendProvider})` : null) ||
+      "(Unknown Form)";
+
+    const key = [
+      displayName,
+      r.websiteFormSource ?? "\x00",
+      r.formId            ?? "\x00",
+      r.backendProvider   ?? "\x00",
+      r.pageUrl           ?? "\x00",
+    ].join("||");
+
+    const d = r.createdAtSource ?? r.reportDate ?? null;
+    const g = groupMap.get(key);
+    if (!g) {
+      groupMap.set(key, {
+        formName:          displayName,
+        websiteFormSource: r.websiteFormSource,
+        formId:            r.formId,
+        backendProvider:   r.backendProvider,
+        pageUrl:           r.pageUrl,
+        total:  1,
+        unique: r.isDuplicate ? 0 : 1,
+        dupes:  r.isDuplicate ? 1 : 0,
+        lastDate: d,
+      });
+    } else {
+      g.total++;
+      if (r.isDuplicate) g.dupes++; else g.unique++;
+      if (d && (!g.lastDate || d > g.lastDate)) g.lastDate = d;
+    }
+  }
+
   const results: WebsiteFormRow[] = [];
-  for (const f of forms) {
-    if (!f.formName) continue;
-    const total = f._count.id;
-
-    // Match EXACTLY this group's field values so unique + dupes = total always.
-    // Null fields must be matched as null (IS NULL), not ignored.
-    const groupWhere = {
-      ...extra,
-      sourceSystem: "WEBSITE" as const,
-      formName: f.formName,
-      websiteFormSource: f.websiteFormSource,
-      formId: f.formId,
-      backendProvider: f.backendProvider,
-      pageUrl: f.pageUrl,
-      ...(Object.keys(dateWhere).length ? dateWhere : {}),
-    };
-
-    const [unique, dupes, lastSub] = await Promise.all([
-      prisma.leadSourceRecord.count({ where: { ...groupWhere, isDuplicate: false } }),
-      prisma.leadSourceRecord.count({ where: { ...groupWhere, isDuplicate: true } }),
-      prisma.leadSourceRecord.findFirst({
-        where: { ...groupWhere },
-        orderBy: { createdAtSource: "desc" },
-        select: { createdAtSource: true, reportDate: true },
-      }),
-    ]);
-
-    // Safety: uniqueLeads must never exceed totalSubmissions
-    const uniqueLeads    = Math.min(unique, total);
-    const duplicateCount = Math.max(0, total - uniqueLeads);
-
+  for (const g of Array.from(groupMap.values()).sort((a, b) => b.total - a.total)) {
+    const uniqueLeads    = Math.min(g.unique, g.total);
+    const duplicateCount = Math.max(0, g.total - uniqueLeads);
     const status: import("@/types").AuditStatus = uniqueLeads === 0 ? "NEEDS_REVIEW" : "PASSED";
-
     results.push({
-      id: f.formName,
-      formName: f.formName,
-      formId: f.formId,
-      websiteFormSource: f.websiteFormSource,
-      backendProvider: f.backendProvider,
-      pageUrl: f.pageUrl,
-      totalSubmissions: total,
+      id:                    g.formName,
+      formName:              g.formName,
+      formId:                g.formId,
+      websiteFormSource:     g.websiteFormSource,
+      backendProvider:       g.backendProvider,
+      pageUrl:               g.pageUrl,
+      totalSubmissions:      g.total,
       uniqueLeads,
       duplicateCount,
-      ghlCount: 0,
-      zenotiCount: 0,
-      websiteToGhlDiff: 0,
-      websiteToZenotiDiff: 0,
+      ghlCount:              0,
+      zenotiCount:           0,
+      websiteToGhlDiff:      0,
+      websiteToZenotiDiff:   0,
       websiteToGhlMatchRate: 0,
       websiteToZenotiMatchRate: 0,
       status,
-      lastSubmissionAt:
-        lastSub?.createdAtSource?.toISOString() ??
-        lastSub?.reportDate?.toISOString() ?? null,
+      lastSubmissionAt: g.lastDate?.toISOString() ?? null,
     });
   }
-
   return results;
 }
 
 export async function getWebsiteDiagnostics(from?: string, to?: string) {
-  const dateFilter = buildDateFilter(from, to);
-  const dateWhere  = websiteDateWhere(dateFilter);
-  const dw = Object.keys(dateWhere).length ? dateWhere : {};
+  const dateFilter   = buildDateFilter(from, to);
+  // Use simple (no OR) count for the "in date range" number — avoids Prisma count+OR issues.
+  // Records without createdAtSource are counted separately.
+  const simpleDW = websiteDateWhereSimple(dateFilter);
 
-  const [totalAll, websiteTotal, websiteInRange, missingDate] = await Promise.all([
+  const [totalAll, websiteTotal, websiteInRange, missingDate, websiteNoDate] = await Promise.all([
     prisma.leadSourceRecord.count(),
     prisma.leadSourceRecord.count({ where: { sourceSystem: "WEBSITE" } }),
-    prisma.leadSourceRecord.count({ where: { ...dw, sourceSystem: "WEBSITE" } }),
-    prisma.leadSourceRecord.count({ where: { sourceSystem: "WEBSITE", createdAtSource: null } }),
+    // Count records in range by createdAtSource only (simple, reliable).
+    prisma.leadSourceRecord.count({
+      where: { sourceSystem: "WEBSITE", ...(Object.keys(simpleDW).length ? simpleDW : {}) },
+    }),
+    prisma.leadSourceRecord.count({ where: { sourceSystem: "WEBSITE", createdAtSource: { equals: null } } }),
+    // Also count records with reportDate in range (for CSV imports).
+    prisma.leadSourceRecord.count({
+      where: {
+        sourceSystem: "WEBSITE",
+        createdAtSource: { equals: null },
+        ...(dateFilter ? { reportDate: dateFilter } : {}),
+      },
+    }),
   ]);
 
   const [earliest, latest, sample] = await Promise.all([
@@ -643,7 +720,8 @@ export async function getWebsiteDiagnostics(from?: string, to?: string) {
       take: 5,
       select: {
         id: true, sourceSystem: true, backendProvider: true,
-        formName: true, websiteFormSource: true, createdAtSource: true,
+        formName: true, websiteFormSource: true,
+        createdAtSource: true, reportDate: true, importedAt: true,
       },
     }),
   ]);
@@ -651,10 +729,13 @@ export async function getWebsiteDiagnostics(from?: string, to?: string) {
   return {
     totalRecords: totalAll,
     websiteRecords: websiteTotal,
+    // createdAtSource-based count (the primary date field for GF API records).
     websiteInDateRange: websiteInRange,
+    // Additional: how many would also be matched via reportDate fallback.
+    websiteInDateRangeViaReportDate: websiteNoDate,
     missingCreatedAtSource: missingDate,
     earliestCreatedAtSource: earliest?.createdAtSource?.toISOString() ?? null,
-    latestCreatedAtSource: latest?.createdAtSource?.toISOString() ?? null,
+    latestCreatedAtSource:   latest?.createdAtSource?.toISOString()   ?? null,
     sampleRecords: sample,
   };
 }

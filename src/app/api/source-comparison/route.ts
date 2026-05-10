@@ -22,9 +22,12 @@ export async function GET(req: NextRequest) {
       const by = (searchParams.get("by") || "clinic") as "clinic" | "service" | "websiteFormSource" | "campaign";
       return NextResponse.json(await getSourceComparisonDrilldown(periodStart, periodEnd, by));
     }
-    return NextResponse.json(await getSourceComparison(from, to, groupBy, timezone, clinic, service, adAccountId));
+    // Always return { rows, _error? } shape so the page can distinguish errors from empty results.
+    const rows = await getSourceComparison(from, to, groupBy, timezone, clinic, service, adAccountId);
+    return NextResponse.json({ rows });
   } catch (err: any) {
-    console.error("[/api/source-comparison]", err?.message ?? err);
-    return NextResponse.json([], { status: 200 });
+    const msg = err?.message ?? String(err);
+    console.error("[/api/source-comparison]", msg, err?.stack ?? "");
+    return NextResponse.json({ rows: [], _error: msg }, { status: 200 });
   }
 }

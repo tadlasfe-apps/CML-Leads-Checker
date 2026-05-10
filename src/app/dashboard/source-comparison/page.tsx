@@ -44,8 +44,9 @@ function SourceComparisonPageInner() {
   const [metaAccounts, setMetaAccounts] = useState<Array<{ accountId: string; accountName: string }>>([]);
   const [sortField, setSortField] = useState("periodStart");
   const [sortDir,   setSortDir]   = useState<"asc" | "desc">("desc");
-  const [rows, setRows]  = useState<SourceComparisonRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows]         = useState<SourceComparisonRow[]>([]);
+  const [queryError, setQueryError] = useState<string | null>(null);
+  const [loading, setLoading]   = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [drillData, setDrillData] = useState<any[] | null>(null);
 
@@ -66,7 +67,15 @@ function SourceComparisonPageInner() {
         ? fetch(`/api/meta-leads?from=${dateRange.from}&to=${dateRange.to}`)
         : Promise.resolve(null),
     ]);
-    setRows(await res.json());
+    const json = await res.json();
+    // Handle both legacy array response and new { rows, _error? } shape.
+    if (Array.isArray(json)) {
+      setRows(json);
+      setQueryError(null);
+    } else {
+      setRows(json.rows ?? []);
+      setQueryError(json._error ?? null);
+    }
     if (metaRes) {
       const metaData = await metaRes.json();
       if (metaData?.byAdAccount?.length > 0) {
@@ -194,6 +203,13 @@ function SourceComparisonPageInner() {
           <ExportButton endpoint="/api/export" filename="source-comparison.csv"
             params={{ type: "source-comparison", from: dateRange.from || "", to: dateRange.to || "" }} />
         </div>
+
+        {/* Query error banner */}
+        {queryError && (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 font-mono break-all">
+            <strong>Query error:</strong> {queryError}
+          </div>
+        )}
 
         {/* Summary totals */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">

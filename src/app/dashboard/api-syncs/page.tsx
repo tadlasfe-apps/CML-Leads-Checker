@@ -179,11 +179,15 @@ function ApiPullSection({
     fetched: number; created: number; skipped: number;
     warning?: string; step?: string; partialSuccess?: boolean;
     byAccount?: Array<{ accountId: string; accountName?: string; rowsFetched: number; leadsFound: number; spend: number }>;
+    sampleSaved?: any[];
   } | null>(null);
   const [error,         setError]         = useState<string | null>(null);
   const [clearConfirm,  setClearConfirm]  = useState(false);
   const [clearLoading,  setClearLoading]  = useState(false);
   const [clearResult,   setClearResult]   = useState<{ deleted: number } | null>(null);
+  const [fixLoading,    setFixLoading]    = useState(false);
+  const [fixResult,     setFixResult]     = useState<{ totalPatched: number; groupsProcessed: number } | null>(null);
+  const [fixError,      setFixError]      = useState<string | null>(null);
 
   async function runPull() {
     setLoading(true); setResult(null); setError(null);
@@ -205,11 +209,23 @@ function ApiPullSection({
           step:           json.step ?? undefined,
           partialSuccess: !!json.partialSuccess,
           byAccount:      json.byAccount ?? undefined,
+          sampleSaved:    json.sampleSaved ?? undefined,
         });
         onComplete();
       }
     } catch (err: any) { setError(err?.message ?? "Unexpected error"); }
     setLoading(false);
+  }
+
+  async function runFix() {
+    setFixLoading(true); setFixResult(null); setFixError(null);
+    try {
+      const res  = await fetch("/api/debug/fix-website-sources", { method: "POST" });
+      const json = await res.json();
+      if (json.error) setFixError(json.error);
+      else setFixResult({ totalPatched: json.totalPatched ?? 0, groupsProcessed: json.groupsProcessed ?? 0 });
+    } catch (err: any) { setFixError(err?.message ?? "Unexpected error"); }
+    setFixLoading(false);
   }
 
   async function runClear() {
@@ -294,6 +310,57 @@ function ApiPullSection({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Sample saved records */}
+      {result?.sampleSaved && result.sampleSaved.length > 0 && (
+        <div className="rounded-md border bg-muted/20 overflow-hidden">
+          <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b uppercase tracking-wide">
+            Most Recent Saved Records ({result.sampleSaved.length})
+          </p>
+          <div className="divide-y">
+            {result.sampleSaved.map((r: any, i: number) => (
+              <div key={i} className="px-3 py-1.5 text-xs font-mono text-muted-foreground truncate">
+                {r.externalId?.slice(0, 20)}… · {r.formName ?? r.campaignName ?? "—"} · {r.createdAtSource?.slice(0, 10) ?? r.reportDate?.slice(0, 10) ?? "no date"} · imported {r.importedAt?.slice(0, 10) ?? "?"}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Fix Website Form Sources (Website only) */}
+      {!isMeta && (
+        <div className="border-t pt-3 mt-1 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Data Repair</p>
+          <p className="text-xs text-muted-foreground">
+            Re-infers <code className="bg-gray-100 px-1 rounded">websiteFormSource</code> for all records stored as "Unknown" using their saved form name.
+            Run once after a pull to fix existing records.
+          </p>
+          <Button
+            size="sm" variant="outline"
+            onClick={runFix} disabled={fixLoading}
+            className="flex items-center gap-1.5 text-xs h-7"
+          >
+            {fixLoading
+              ? <><Loader2 className="w-3 h-3 animate-spin" /> Fixing…</>
+              : <><RefreshCw className="w-3 h-3" /> Fix Website Form Sources</>}
+          </Button>
+          {fixError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 flex items-start gap-2">
+              <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
+              <p className="text-xs text-red-700">{fixError}</p>
+            </div>
+          )}
+          {fixResult && (
+            <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 flex items-center gap-2">
+              <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0" />
+              <span className="text-xs text-green-800">
+                Patched <strong>{fixResult.totalPatched}</strong> record{fixResult.totalPatched !== 1 ? "s" : ""} across{" "}
+                {fixResult.groupsProcessed} form group{fixResult.groupsProcessed !== 1 ? "s" : ""}.
+              </span>
+            </div>
+          )}
         </div>
       )}
 

@@ -9,7 +9,8 @@
       "Bash(curl -s --max-time 10 https://registry.npmjs.org/next/latest)",
       "Bash(ping -c 2 registry.npmjs.org)",
       "Bash(npx tsc *)",
-      "Bash(npx prisma *)"
+      "Bash(npx prisma *)",
+      "Bash(npm run *)"
     ]
   }
 }

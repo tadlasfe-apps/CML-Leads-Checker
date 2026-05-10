@@ -225,9 +225,9 @@ export function inferWebsiteFormSource(
   const name = normalizeLower(formName);
   const url  = normalizeLower(pageUrl);
 
-  if (name.includes("quiz") || url.includes("quiz"))                             return "Website Quiz";
-  if (name.includes("popup") || name.includes("pop-up") || url.includes("popup")) return "Popup";
-  if (name.includes("exit intent") || name.includes("exit-intent"))              return "Exit Intent Popup";
+  if (name.includes("quiz") || url.includes("quiz"))                                                          return "Website Quiz";
+  if (name.includes("popup") || name.includes("pop-up") || name.includes("pop up") || url.includes("popup")) return "Popup";
+  if (name.includes("exit intent") || name.includes("exit-intent"))                                          return "Exit Intent Popup";
   if (name.includes("landing") || url.includes("/lp/") || url.includes("/landing")) return "Landing Page Form";
   if (name.includes("promo") || url.includes("/promo"))                          return "Promo Page Form";
   if (name.includes("free consultation") || name.includes("book a free"))        return "Free Consultation Form";

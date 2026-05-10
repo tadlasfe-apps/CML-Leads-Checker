@@ -226,6 +226,43 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    let sampleSaved: any[] = [];
+    let earliestReportDate: string | null = null;
+    let latestReportDate:   string | null = null;
+    let totalMetaLeadCountSaved = 0;
+    try {
+      const [samples, earliest, latest, agg] = await Promise.all([
+        prisma.leadSourceRecord.findMany({
+          where: { sourceSystem: "META" },
+          orderBy: { importedAt: "desc" },
+          take: 5,
+          select: {
+            id: true, externalId: true, campaignName: true, metaAdAccountId: true,
+            metaAdAccountName: true, metaResultType: true, metaLeadCount: true,
+            reportDate: true, importedAt: true, sourceSystem: true,
+          },
+        }),
+        prisma.leadSourceRecord.findFirst({
+          where: { sourceSystem: "META", reportDate: { not: null } },
+          orderBy: { reportDate: "asc" },
+          select: { reportDate: true },
+        }),
+        prisma.leadSourceRecord.findFirst({
+          where: { sourceSystem: "META", reportDate: { not: null } },
+          orderBy: { reportDate: "desc" },
+          select: { reportDate: true },
+        }),
+        prisma.leadSourceRecord.aggregate({
+          where: { sourceSystem: "META" },
+          _sum: { metaLeadCount: true },
+        }),
+      ]);
+      sampleSaved              = samples;
+      earliestReportDate       = earliest?.reportDate?.toISOString() ?? null;
+      latestReportDate         = latest?.reportDate?.toISOString()   ?? null;
+      totalMetaLeadCountSaved  = agg._sum.metaLeadCount ?? 0;
+    } catch { /* non-critical */ }
+
     return NextResponse.json({
       success: true,
       accountsAttempted: accountIds.length,
@@ -236,6 +273,12 @@ export async function POST(req: NextRequest) {
       byAccount,
       errors: errors.length > 0 ? errors : undefined,
       syncRunId: syncRun.id,
+      // Diagnostic fields
+      sampleSaved,
+      savedSourceSystems: ["META"],
+      earliestReportDate,
+      latestReportDate,
+      totalMetaLeadCountSaved,
     });
   } catch (err: any) {
     await prisma.syncRun.update({

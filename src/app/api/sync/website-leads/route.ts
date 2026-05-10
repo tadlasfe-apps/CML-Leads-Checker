@@ -132,6 +132,72 @@ async function fetchAllEntries(from: string, to: string): Promise<any[]> {
   return entries;
 }
 
+// ─── Form title lookup ────────────────────────────────────────────────────────
+//
+// The /gf/v2/entries endpoint does NOT include the form title in the entry body.
+// We fetch /gf/v2/forms (all forms list in one request) and build a map of
+// formId → title so parseEntry can attach the real GF form name.
+// Falls back to individual /gf/v2/forms/{id} requests if the list endpoint fails.
+
+async function fetchFormTitles(entries: any[]): Promise<Map<string, string>> {
+  const base     = gfBase();
+  const titleMap = new Map<string, string>();
+
+  // Collect the unique form IDs we actually need
+  const uniqueIds = new Set(
+    entries.map((e) => toSafeString(e.form_id).trim()).filter(Boolean)
+  );
+  if (uniqueIds.size === 0) return titleMap;
+
+  // Helper: extract title from a single form object
+  function extractTitle(form: any): string {
+    return toSafeString(form?.title ?? form?.form_title ?? form?.name ?? "").trim();
+  }
+
+  // Helper: populate titleMap from a GF forms response (object or array)
+  function populateFromFormsResponse(data: any) {
+    if (!data || typeof data !== "object") return;
+    if (Array.isArray(data)) {
+      // GF can return an array of form objects
+      for (const form of data) {
+        const id = toSafeString(form?.id ?? form?.form_id ?? "").trim();
+        const title = extractTitle(form);
+        if (id && title) titleMap.set(id, title);
+      }
+    } else {
+      // GF returns an object keyed by form ID: { "1": { title: "..." }, "17": { title: "..." } }
+      for (const [id, form] of Object.entries(data)) {
+        const title = extractTitle(form as any);
+        if (title) titleMap.set(String(id), title);
+      }
+    }
+  }
+
+  // ── Strategy 1: Fetch all forms in a single request ──────────────────────
+  try {
+    const data = await gfFetch(`${base}/wp-json/gf/v2/forms`);
+    populateFromFormsResponse(data);
+  } catch { /* fall through to individual requests */ }
+
+  // ── Strategy 2: Fetch any still-missing forms individually ───────────────
+  const stillMissing = [...uniqueIds].filter((id) => !titleMap.has(id));
+  if (stillMissing.length > 0) {
+    await Promise.all(
+      stillMissing.map(async (formId) => {
+        try {
+          const formData = await gfFetch(`${base}/wp-json/gf/v2/forms/${formId}`);
+          const title = extractTitle(formData);
+          if (title) titleMap.set(formId, title);
+        } catch {
+          // Non-fatal: entry will fall back to form ID label
+        }
+      })
+    );
+  }
+
+  return titleMap;
+}
+
 // ─── Safe field extractor ─────────────────────────────────────────────────────
 //
 // Searches entry._labels for any label that contains ALL of the given keywords
@@ -181,7 +247,7 @@ interface ParseError {
 
 // ─── Entry parser ─────────────────────────────────────────────────────────────
 
-function parseEntry(entry: any): {
+function parseEntry(entry: any, formTitleMap?: Map<string, string>): {
   record: Record<string, any>;
   needsReview: boolean;
   errors: ParseError[];
@@ -313,9 +379,14 @@ function parseEntry(entry: any): {
   }
 
   // ── Form name ─────────────────────────────────────────────────────────────
+  // GF entries endpoint does not include form_title in the entry body.
+  // We look it up from the pre-fetched formTitleMap first, then fall back
+  // to whatever the entry provides, then to "Form {formId}" as a last resort.
 
   const formName: string | undefined =
-    toSafeString(entry.form_title ?? entry.form_name).trim() || undefined;
+    (formId && formTitleMap?.get(formId)) ||
+    toSafeString(entry.form_title ?? entry.form_name).trim() ||
+    (formId ? `Form ${formId}` : undefined);
 
   // ── Normalize (each wrapped individually for row-level diagnostics) ────────
 
@@ -448,13 +519,22 @@ export async function POST(req: NextRequest) {
     currentStep = "fetchEntries";
     entries = await fetchAllEntries(from, to);
 
+    // ── Step 1b: Resolve form titles (GF entries don't include form_title) ────
+    currentStep = "fetchFormTitles";
+    let formTitleMap: Map<string, string>;
+    try {
+      formTitleMap = await fetchFormTitles(entries);
+    } catch {
+      formTitleMap = new Map(); // Non-fatal: fall back to form ID labels
+    }
+
     // ── Step 2: Parse each entry defensively ─────────────────────────────────
     currentStep = "parseEntries";
     const validRecords: any[] = [];
 
     for (const entry of entries) {
       try {
-        const { record, needsReview: nr, errors } = parseEntry(entry);
+        const { record, needsReview: nr, errors } = parseEntry(entry, formTitleMap);
 
         if (errors.length > 0) parseErrors.push(...errors);
         if (nr) needsReview++;
@@ -482,9 +562,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Step 3: Upsert to database in batches ─────────────────────────────────
+    // ── Step 3: Save to database ──────────────────────────────────────────────
     currentStep = "saveToDB";
     const BATCH = 100;
+
+    // 3a. Insert new records (fast batch insert, skip duplicates).
     for (let i = 0; i < validRecords.length; i += BATCH) {
       const chunk  = validRecords.slice(i, i + BATCH);
       const result = await prisma.leadSourceRecord.createMany({
@@ -493,6 +575,73 @@ export async function POST(req: NextRequest) {
       });
       created += result.count;
       skipped += chunk.length - result.count;
+    }
+
+    // 3b. Patch formName AND websiteFormSource on existing records that had
+    //   stale/placeholder values when first saved:
+    //   - formName null or matching "Form N" pattern  → overwrite with real title
+    //   - websiteFormSource "Unknown" or null          → re-infer from real formName
+    //   Only runs when we now have a real (non-fallback) title from fetchFormTitles.
+    currentStep = "patchFormNames";
+    let updated = 0;
+    // Only patch when we resolved a real title (not just another "Form N" fallback)
+    const recordsWithRealName = validRecords.filter((rec) => {
+      if (!rec.formName || !rec.externalId) return false;
+      const isStillFallback = /^Form \d+$/i.test(rec.formName);
+      return !isStillFallback;
+    });
+    for (let i = 0; i < recordsWithRealName.length; i += BATCH) {
+      const chunk = recordsWithRealName.slice(i, i + BATCH);
+      await Promise.all(
+        chunk.map((rec) => {
+          // Re-infer source from the real form name + stored pageUrl
+          const reInferredSource = inferWebsiteFormSource(rec.formName, rec.pageUrl);
+          return prisma.leadSourceRecord.updateMany({
+            where: {
+              sourceSystem: rec.sourceSystem,
+              externalId:   rec.externalId,
+              OR: [
+                { formName: { equals: null } },
+                // Also overwrite "Form N" placeholder names
+                { formName: { startsWith: "Form " } },
+              ],
+            },
+            data: {
+              formName: rec.formName,
+              // Re-set websiteFormSource when it's still "Unknown" so it reflects
+              // the real form name we just resolved
+              ...(reInferredSource !== "Unknown"
+                ? { websiteFormSource: reInferredSource }
+                : {}),
+            },
+          }).then((r) => { updated += r.count; }).catch(() => { /* ignore */ });
+        })
+      );
+    }
+
+    // 3c. Also patch websiteFormSource for records whose formName is already
+    //     correct (resolved in a previous pull) but whose source is still "Unknown"
+    //     because the inference used to not handle "pop up" with a space.
+    currentStep = "patchFormSources";
+    const recordsWithUnknownSource = validRecords.filter(
+      (rec) => rec.formName && rec.externalId && !/^Form \d+$/i.test(rec.formName)
+    );
+    for (let i = 0; i < recordsWithUnknownSource.length; i += BATCH) {
+      const chunk = recordsWithUnknownSource.slice(i, i + BATCH);
+      await Promise.all(
+        chunk.map((rec) => {
+          const reInferredSource = inferWebsiteFormSource(rec.formName, rec.pageUrl);
+          if (reInferredSource === "Unknown") return Promise.resolve();
+          return prisma.leadSourceRecord.updateMany({
+            where: {
+              sourceSystem:      rec.sourceSystem,
+              externalId:        rec.externalId,
+              websiteFormSource: { in: ["Unknown", ""] },
+            },
+            data: { websiteFormSource: reInferredSource },
+          }).catch(() => { /* ignore */ });
+        })
+      );
     }
 
     // ── Step 4: Update sync run history ───────────────────────────────────────
@@ -507,19 +656,63 @@ export async function POST(req: NextRequest) {
         recordsSkipped: skipped,
       },
     });
+    const updatedCount = updated; // renamed to avoid shadowing
 
-    // ── Step 5: Format and return response ────────────────────────────────────
+    // ── Step 5: Fetch sample saved records and date range for diagnostics ────
     currentStep = "formatResponse";
+    let sampleSaved: any[] = [];
+    let savedSourceSystems: string[] = [];
+    let savedBackendProviders: string[] = [];
+    let earliestCreatedAtSource: string | null = null;
+    let latestCreatedAtSource: string | null = null;
+    try {
+      const [samples, earliest, latest, ssBySys, ssByProv] = await Promise.all([
+        prisma.leadSourceRecord.findMany({
+          where: { sourceSystem: "WEBSITE" },
+          orderBy: { importedAt: "desc" },
+          take: 5,
+          select: {
+            id: true, externalId: true, formName: true, websiteFormSource: true,
+            backendProvider: true, createdAtSource: true, reportDate: true,
+            importedAt: true, isDuplicate: true, sourceSystem: true,
+          },
+        }),
+        prisma.leadSourceRecord.findFirst({
+          where: { sourceSystem: "WEBSITE", createdAtSource: { not: null } },
+          orderBy: { createdAtSource: "asc" },
+          select: { createdAtSource: true },
+        }),
+        prisma.leadSourceRecord.findFirst({
+          where: { sourceSystem: "WEBSITE", createdAtSource: { not: null } },
+          orderBy: { createdAtSource: "desc" },
+          select: { createdAtSource: true },
+        }),
+        prisma.leadSourceRecord.groupBy({ by: ["sourceSystem"], where: { sourceSystem: "WEBSITE" }, _count: { id: true } }),
+        prisma.leadSourceRecord.groupBy({ by: ["backendProvider"], where: { sourceSystem: "WEBSITE" }, _count: { id: true } }),
+      ]);
+      sampleSaved = samples;
+      earliestCreatedAtSource = earliest?.createdAtSource?.toISOString() ?? null;
+      latestCreatedAtSource   = latest?.createdAtSource?.toISOString()   ?? null;
+      savedSourceSystems      = ssBySys.map((r) => r.sourceSystem);
+      savedBackendProviders   = ssByProv.map((r) => r.backendProvider ?? "(null)");
+    } catch { /* non-critical */ }
+
     return NextResponse.json({
       success:     true,
       fetched:     entries.length,
       created,
-      updated:     0,
+      updated:     updatedCount,
       skipped,
       invalidRows,
       needsReview,
       syncRunId:   syncRun.id,
       parseErrors: parseErrors.slice(0, 20),
+      // Diagnostic fields
+      sampleSaved,
+      savedSourceSystems,
+      savedBackendProviders,
+      earliestCreatedAtSource,
+      latestCreatedAtSource,
     });
 
   } catch (err: any) {

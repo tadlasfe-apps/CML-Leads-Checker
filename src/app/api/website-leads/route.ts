@@ -11,13 +11,20 @@ export async function GET(req: NextRequest) {
   const clinic  = searchParams.get("clinic") || undefined;
   const service = searchParams.get("service") || undefined;
   try {
-    const [rows, diagnostics] = await Promise.all([
-      getWebsiteForms(from, to, clinic, service),
-      getWebsiteDiagnostics(from, to),
-    ]);
+    // Run independently so a diagnostics failure doesn't blank the rows.
+    const rows = await getWebsiteForms(from, to, clinic, service);
+    let diagnostics: any = null;
+    try {
+      diagnostics = await getWebsiteDiagnostics(from, to);
+    } catch (diagErr: any) {
+      console.error("[/api/website-leads diagnostics]", diagErr?.message ?? diagErr);
+      diagnostics = { _error: diagErr?.message ?? String(diagErr) };
+    }
     return NextResponse.json({ rows, diagnostics });
   } catch (err: any) {
-    console.error("[/api/website-leads]", err?.message ?? err);
-    return NextResponse.json({ rows: [], diagnostics: null }, { status: 200 });
+    const msg = err?.message ?? String(err);
+    console.error("[/api/website-leads]", msg, err?.stack ?? "");
+    // Return _error so the UI can surface it instead of silently showing 0.
+    return NextResponse.json({ rows: [], diagnostics: null, _error: msg }, { status: 200 });
   }
 }
