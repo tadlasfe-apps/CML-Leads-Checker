@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
-import { Search, ArrowUpDown, Copy, Globe, ChevronDown, ChevronRight, Info } from "lucide-react";
+import { Search, ArrowUpDown, Copy, Globe, ChevronDown, ChevronRight, Info, Tag } from "lucide-react";
 import type { WebsiteFormRow } from "@/types";
 
 function WebsiteLeadsPageInner() {
@@ -28,9 +28,10 @@ function WebsiteLeadsPageInner() {
 
   const [search,       setSearch]       = useState(sp.get("q") || "");
   const [sourceFilter, setSourceFilter] = useState(sp.get("source") || "all");
-  const [sortField,    setSortField]    = useState("totalSubmissions");
+  const [sortField,    setSortField]    = useState("uniqueLeads");
   const [sortDir,      setSortDir]      = useState<"asc" | "desc">("desc");
   const [rows,         setRows]         = useState<WebsiteFormRow[]>([]);
+  const [byService,    setByService]    = useState<any[]>([]);
   const [diagnostics,  setDiagnostics]  = useState<any | null>(null);
   const [queryError,   setQueryError]   = useState<string | null>(null);
   const [loading,      setLoading]      = useState(true);
@@ -50,10 +51,12 @@ function WebsiteLeadsPageInner() {
     // Handle both old array response and new { rows, diagnostics, _error? } shape
     if (Array.isArray(json)) {
       setRows(json);
+      setByService([]);
       setDiagnostics(null);
       setQueryError(null);
     } else {
       setRows(json.rows ?? []);
+      setByService(json.byService ?? []);
       setDiagnostics(json.diagnostics ?? null);
       setQueryError(json._error ?? null);
     }
@@ -147,16 +150,16 @@ function WebsiteLeadsPageInner() {
         <div className="grid grid-cols-3 gap-3">
           <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Submissions</p>
-              <p className="text-2xl font-bold tabular-nums text-blue-600">{totals.total}</p>
-              <p className="text-xs text-muted-foreground mt-1">sourceSystem = WEBSITE</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Leads</p>
+              <p className="text-2xl font-bold tabular-nums text-blue-600">{totals.unique}</p>
+              <p className="text-xs text-muted-foreground mt-1">unique submissions only</p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Unique Leads</p>
-              <p className="text-2xl font-bold tabular-nums text-indigo-600">{totals.unique}</p>
-              <p className="text-xs text-muted-foreground mt-1">after deduplication</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Submissions</p>
+              <p className="text-2xl font-bold tabular-nums text-muted-foreground">{totals.total}</p>
+              <p className="text-xs text-muted-foreground mt-1">incl. duplicates</p>
             </CardContent>
           </Card>
           <Card>
@@ -287,6 +290,48 @@ function WebsiteLeadsPageInner() {
             )}
           </CardContent>
         </Card>
+        {/* Website Leads by Service */}
+        {byService.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Tag className="w-4 h-4 text-muted-foreground" />
+                Website Leads by Service
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow className="text-xs">
+                    <TableHead>Service</TableHead>
+                    <TableHead className="text-right">Unique Leads</TableHead>
+                    <TableHead className="text-right">Submissions</TableHead>
+                    <TableHead className="text-right">Duplicates</TableHead>
+                    <TableHead className="text-right">Forms</TableHead>
+                    <TableHead>Last Submission</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {byService.map((s: any) => (
+                    <TableRow key={s.service} className="text-sm">
+                      <TableCell className="font-medium">{s.service}</TableCell>
+                      <TableCell className="text-right tabular-nums font-semibold text-blue-600">{s.unique}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{s.total}</TableCell>
+                      <TableCell className="text-right tabular-nums text-yellow-600">
+                        {s.dupes > 0 ? s.dupes : <span className="text-muted-foreground">0</span>}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{s.formCount}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                        {s.lastSubmissionAt ? s.lastSubmissionAt.slice(0, 10) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+
       </div>
     </div>
   );

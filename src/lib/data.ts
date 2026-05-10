@@ -659,7 +659,7 @@ export async function getWebsiteForms(
   }
 
   const results: WebsiteFormRow[] = [];
-  for (const g of Array.from(groupMap.values()).sort((a, b) => b.total - a.total)) {
+  for (const g of Array.from(groupMap.values()).sort((a, b) => b.unique - a.unique)) {
     const uniqueLeads    = Math.min(g.unique, g.total);
     const duplicateCount = Math.max(0, g.total - uniqueLeads);
     const isExcluded     = EXCLUDED_WEBSITE_FORM_SOURCES.includes(g.websiteFormSource ?? "");
@@ -793,10 +793,20 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
     accountNames: Set<string>;
   }>();
 
-  // Aggregate by campaign, result type, and ad account
+  // Aggregate by campaign, result type, ad account, and service
   const byCampaign = new Map<string, { leads: number; spend: number; accountId: string | null; accountName: string | null }>();
   const byResultType = new Map<string, number>();
   const byAdAccount = new Map<string, { accountId: string; accountName: string; leads: number; spend: number; campaignSet: Set<string> }>();
+  const byService = new Map<string, {
+    service: string;
+    leads: number;
+    spend: number;
+    impressions: number;
+    reach: number;
+    clicks: number;
+    campaignSet: Set<string>;
+    accountNames: Set<string>;
+  }>();
   let totalLeads = 0;
   let totalSpend = 0;
 
@@ -839,6 +849,21 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
     if (r.metaAdName) clExisting.adSet2.add(r.metaAdName);
     if (r.metaAdAccountName) clExisting.accountNames.add(r.metaAdAccountName);
     byClinicLocation.set(clinic, clExisting);
+
+    // Service aggregation
+    const svc = r.serviceNormalized ?? "Other";
+    const svcEx = byService.get(svc) ?? {
+      service: svc, leads: 0, spend: 0, impressions: 0, reach: 0, clicks: 0,
+      campaignSet: new Set<string>(), accountNames: new Set<string>(),
+    };
+    svcEx.leads += leads;
+    svcEx.spend += spend;
+    svcEx.impressions += r.impressions ?? 0;
+    svcEx.reach += r.reach ?? 0;
+    svcEx.clicks += r.clicks ?? 0;
+    if (r.campaignName) svcEx.campaignSet.add(r.campaignName);
+    if (r.metaAdAccountName) svcEx.accountNames.add(r.metaAdAccountName);
+    byService.set(svc, svcEx);
   }
 
   return {
@@ -865,7 +890,66 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
         accountNames: Array.from(accountNames),
       }))
       .sort((a, b) => b.leads - a.leads),
+    byService: Array.from(byService.values())
+      .map(({ campaignSet, accountNames, ...rest }) => ({
+        ...rest,
+        cpl: rest.leads > 0 ? Math.round((rest.spend / rest.leads) * 100) / 100 : null,
+        campaignCount: campaignSet.size,
+        accountNames: Array.from(accountNames),
+      }))
+      .sort((a, b) => b.leads - a.leads),
   };
+}
+
+// ─── Website Service Breakdown ────────────────────────────────────────────────
+
+export async function getWebsiteServiceBreakdown(from?: string, to?: string) {
+  const dateFilter = buildDateFilter(from, to);
+  const dateCond = websiteDateWhere(dateFilter);
+
+  const records = await prisma.leadSourceRecord.findMany({
+    where: {
+      sourceSystem: "WEBSITE",
+      websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES },
+      ...(Object.keys(dateCond).length ? dateCond : {}),
+    },
+    select: {
+      serviceNormalized: true,
+      serviceRaw: true,
+      formName: true,
+      isDuplicate: true,
+      createdAtSource: true,
+      reportDate: true,
+    },
+  });
+
+  const map = new Map<string, {
+    service: string;
+    total: number;
+    unique: number;
+    dupes: number;
+    formSet: Set<string>;
+    lastDate: Date | null;
+  }>();
+
+  for (const r of records) {
+    const svc = r.serviceNormalized ?? "Other";
+    const existing = map.get(svc) ?? { service: svc, total: 0, unique: 0, dupes: 0, formSet: new Set<string>(), lastDate: null };
+    existing.total++;
+    if (r.isDuplicate) existing.dupes++; else existing.unique++;
+    if (r.formName) existing.formSet.add(r.formName);
+    const d = r.createdAtSource ?? r.reportDate;
+    if (d && (!existing.lastDate || d > existing.lastDate)) existing.lastDate = d;
+    map.set(svc, existing);
+  }
+
+  return Array.from(map.values())
+    .map(({ formSet, ...rest }) => ({
+      ...rest,
+      formCount: formSet.size,
+      lastSubmissionAt: rest.lastDate?.toISOString() ?? null,
+    }))
+    .sort((a, b) => b.unique - a.unique);
 }
 
 // ─── Export helpers ───────────────────────────────────────────────────────────

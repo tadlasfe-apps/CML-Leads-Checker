@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { inferClinicFromMetaRecord } from "@/lib/normalization";
+import { inferClinicFromMetaRecord, inferServiceFromMetaRecord } from "@/lib/normalization";
 
 // Only the canonical Meta Ads "lead" action type is counted.
 // All other action types (onsite_conversion.lead_grouped, leadgen_grouped, etc.)
@@ -178,6 +178,12 @@ export async function POST(req: NextRequest) {
         metaLocationMappings,
       );
 
+      const serviceInferred = inferServiceFromMetaRecord(
+        row.campaign_name,
+        row.adset_name,
+        row.ad_name,
+      );
+
       records.push({
         sourceSystem: "META" as const,
         recordType: "AGGREGATE_REPORT" as const,
@@ -204,6 +210,8 @@ export async function POST(req: NextRequest) {
         linkClicks: row.inline_link_clicks ? parseInt(row.inline_link_clicks, 10) : undefined,
         clinicLocationRaw:        clinicInferred.raw,
         clinicLocationNormalized: clinicInferred.normalized,
+        serviceRaw:        serviceInferred.raw !== "Other" ? serviceInferred.raw : undefined,
+        serviceNormalized: serviceInferred.normalized,
         rawPayload: row,  // full row including all action types for reference
       });
     }

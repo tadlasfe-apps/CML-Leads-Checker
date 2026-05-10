@@ -916,6 +916,69 @@ function GhlPipelineLookup() {
   );
 }
 
+// ─── Service Mapping Backfill card ────────────────────────────────────────────
+
+function ServiceBackfillCard() {
+  const [loading,  setLoading]  = useState(false);
+  const [result,   setResult]   = useState<{ metaPatched: number; websitePatched: number } | null>(null);
+  const [error,    setError]    = useState<string | null>(null);
+
+  async function run() {
+    setLoading(true); setResult(null); setError(null);
+    try {
+      const res  = await fetch("/api/debug/backfill-service", { method: "POST" });
+      const json = await res.json();
+      if (json.error) setError(json.error);
+      else setResult({ metaPatched: json.metaPatched ?? 0, websitePatched: json.websitePatched ?? 0 });
+    } catch (err: any) { setError(err?.message ?? "Unexpected error"); }
+    setLoading(false);
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              <RefreshCw className="w-4 h-4 text-muted-foreground" />
+              Backfill Service Mapping
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Re-infers <code className="bg-gray-100 px-1 rounded text-xs">serviceNormalized</code> for all existing Website and Meta records
+              from campaign names, form names, and page URLs. Does not call any external API.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={run} disabled={loading} className="flex items-center gap-1.5">
+            {loading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Backfilling…</> : <><RefreshCw className="w-3.5 h-3.5" /> Backfill Service Mapping</>}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {error && (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 flex items-start gap-2">
+            <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
+            <p className="text-xs text-red-700">{error}</p>
+          </div>
+        )}
+        {result && (
+          <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 flex items-center gap-2">
+            <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0" />
+            <span className="text-xs text-green-800">
+              Patched <strong>{result.metaPatched}</strong> Meta records and <strong>{result.websitePatched}</strong> Website records.
+            </span>
+          </div>
+        )}
+        {!result && !error && !loading && (
+          <p className="text-xs text-muted-foreground">
+            Run after pulling new Meta or Website data to apply consistent service labels across all records.
+            Also run after adding manual Service Mapping overrides in Mapping Settings.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function DataPullsPage() {
@@ -1097,6 +1160,9 @@ export default function DataPullsPage() {
             );
           })}
         </div>
+
+        {/* Service Mapping Backfill */}
+        <ServiceBackfillCard />
 
         {/* GHL Pipeline Lookup */}
         <GhlPipelineLookup />

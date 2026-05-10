@@ -12,7 +12,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 import { format } from "date-fns";
-import { Search, ArrowUpDown, Share2, DollarSign, Info, Building2 } from "lucide-react";
+import { Search, ArrowUpDown, Share2, DollarSign, Info, Building2, Tag } from "lucide-react";
 
 function MetaLeadsPageInner() {
   const router      = useRouter();
@@ -26,9 +26,10 @@ function MetaLeadsPageInner() {
     return { preset, from: format(r.from, "yyyy-MM-dd"), to: format(r.to, "yyyy-MM-dd") };
   });
 
-  const [adAccountId,  setAdAccountId]  = useState(sp.get("adAccountId") || "");
-  const [clinicFilter, setClinicFilter] = useState("");
-  const [search,       setSearch]       = useState("");
+  const [adAccountId,   setAdAccountId]   = useState(sp.get("adAccountId") || "");
+  const [clinicFilter,  setClinicFilter]  = useState("");
+  const [serviceFilter, setServiceFilter] = useState("");
+  const [search,        setSearch]        = useState("");
   const [sortField,   setSortField]   = useState("reportDate");
   const [sortDir,     setSortDir]     = useState<"asc" | "desc">("desc");
   const [data, setData]   = useState<any | null>(null);
@@ -76,12 +77,15 @@ function MetaLeadsPageInner() {
   const byCampaign: any[]        = data?.byCampaign ?? [];
   const byAdAccount: any[]       = data?.byAdAccount ?? [];
   const byClinicLocation: any[]  = data?.byClinicLocation ?? [];
+  const byService: any[]         = data?.byService ?? [];
   const adAccountCount: number   = data?.adAccountCount ?? byAdAccount.length;
 
   const filtered = allRows
     .filter((r) => {
       const q = search.toLowerCase();
-      return !q || (r.campaignName ?? "").toLowerCase().includes(q) || (r.metaAdSetName ?? "").toLowerCase().includes(q) || (r.metaAdAccountName ?? "").toLowerCase().includes(q);
+      const matchQ = !q || (r.campaignName ?? "").toLowerCase().includes(q) || (r.metaAdSetName ?? "").toLowerCase().includes(q) || (r.metaAdAccountName ?? "").toLowerCase().includes(q);
+      const matchSvc = !serviceFilter || r.serviceNormalized === serviceFilter;
+      return matchQ && matchSvc;
     })
     .sort((a, b) => {
       const av = (a as any)[sortField] ?? ""; const bv = (b as any)[sortField] ?? "";
@@ -135,6 +139,19 @@ function MetaLeadsPageInner() {
                 <option value="">All Clinics</option>
                 {byClinicLocation.map((c: any) => (
                   <option key={c.clinic} value={c.clinic}>{c.clinic}</option>
+                ))}
+              </select>
+            )}
+            {/* Service filter */}
+            {byService.length > 0 && (
+              <select
+                value={serviceFilter}
+                onChange={(e) => setServiceFilter(e.target.value)}
+                className="border rounded px-2 py-1 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring h-8"
+              >
+                <option value="">All Services</option>
+                {byService.map((s: any) => (
+                  <option key={s.service} value={s.service}>{s.service}</option>
                 ))}
               </select>
             )}
@@ -299,6 +316,55 @@ function MetaLeadsPageInner() {
                       <TableCell className="text-right tabular-nums text-muted-foreground">{c.impressions?.toLocaleString() ?? "—"}</TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">{c.reach?.toLocaleString() ?? "—"}</TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">{c.clicks?.toLocaleString() ?? "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Meta Leads by Service */}
+        {byService.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Tag className="w-4 h-4 text-muted-foreground" />
+                Meta Leads by Service
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow className="text-xs">
+                    <TableHead>Service</TableHead>
+                    <TableHead className="text-right">Leads</TableHead>
+                    <TableHead className="text-right">Spend</TableHead>
+                    <TableHead className="text-right">CPL</TableHead>
+                    <TableHead className="text-right">Campaigns</TableHead>
+                    <TableHead>Ad Accounts</TableHead>
+                    <TableHead className="text-right">Impressions</TableHead>
+                    <TableHead className="text-right">Reach</TableHead>
+                    <TableHead className="text-right">Clicks</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(serviceFilter
+                    ? byService.filter((s: any) => s.service === serviceFilter)
+                    : byService
+                  ).map((s: any) => (
+                    <TableRow key={s.service} className="text-sm">
+                      <TableCell className="font-medium">{s.service}</TableCell>
+                      <TableCell className="text-right tabular-nums font-semibold text-purple-600">{s.leads}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">${Number(s.spend).toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{s.cpl != null ? `$${s.cpl}` : "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{s.campaignCount}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate" title={(s.accountNames ?? []).join(", ")}>
+                        {(s.accountNames ?? []).join(", ") || "—"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{s.impressions?.toLocaleString() ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{s.reach?.toLocaleString() ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{s.clicks?.toLocaleString() ?? "—"}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

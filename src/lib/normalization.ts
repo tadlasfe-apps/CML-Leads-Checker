@@ -60,38 +60,77 @@ const CLINIC_KEYWORDS: Record<string, string> = {
   london: "London",
 };
 
-const SERVICE_KEYWORDS: Record<string, string> = {
-  "laser hair removal": "Laser Hair Removal",
-  "full body laser": "Laser Hair Removal",
-  "laser hair": "Laser Hair Removal",
-  lhr: "Laser Hair Removal",
-  laser: "Laser Hair Removal",
-  morpheus8: "Morpheus8",
-  morpheus: "Morpheus8",
-  "hair restoration": "Hair Restoration",
-  "hair loss": "Hair Restoration",
-  "hair growth": "Hair Restoration",
-  "prp hair": "Hair Restoration",
-  microneedling: "Microneedling",
-  "micro needling": "Microneedling",
-  "rf microneedling": "Microneedling",
-  "salmon dna": "Salmon DNA",
-  pdrn: "Salmon DNA",
-  "express facial": "Express Facial",
-  "$69 facial": "Express Facial",
-  botox: "Botox",
-  "anti-wrinkle": "Botox",
-  filler: "Fillers",
-  fillers: "Fillers",
-  "lip filler": "Fillers",
-  "cheek filler": "Fillers",
-  "dermal filler": "Fillers",
-  coolsculpting: "CoolSculpting",
-  "fat freezing": "CoolSculpting",
-  "skin tightening": "Skin Tightening",
-  radiofrequency: "Skin Tightening",
-  "rf skin": "Skin Tightening",
-};
+// Ordered from most-specific to most-generic so the first match wins.
+// Keys are lowercased substrings; values are canonical service names.
+const SERVICE_KEYWORD_ENTRIES: [string, string][] = [
+  // Laser Hair Removal (most specific first)
+  ["full body laser hair removal", "Laser Hair Removal"],
+  ["full body laser",              "Laser Hair Removal"],
+  ["laser hair removal",          "Laser Hair Removal"],
+  ["laser hair",                  "Laser Hair Removal"],
+  ["lhr",                         "Laser Hair Removal"],
+  // Morpheus8
+  ["morpheus8",    "Morpheus8"],
+  ["morpheus 8",   "Morpheus8"],
+  [" m8",          "Morpheus8"],   // space before to avoid false matches like "term8"
+  ["morpheus",     "Morpheus8"],
+  // Botox / Neuromodulators
+  ["anti-wrinkle", "Botox"],
+  ["anti wrinkle", "Botox"],
+  ["neuromodulator","Botox"],
+  ["botox",        "Botox"],
+  // Microneedling
+  ["rf microneedling", "Microneedling"],
+  ["micro needling",   "Microneedling"],
+  ["microneedling",    "Microneedling"],
+  ["skinpen",          "Microneedling"],
+  // Salmon DNA
+  ["salmon dna", "Salmon DNA"],
+  ["pdrn",       "Salmon DNA"],
+  // PRP / Hair Restoration
+  ["prp hair",            "Hair Restoration"],
+  ["hair restoration",    "Hair Restoration"],
+  ["hair loss",           "Hair Restoration"],
+  ["hair growth",         "Hair Restoration"],
+  ["platelet rich plasma","PRP"],
+  ["prp",                 "PRP"],
+  // Fillers
+  ["dermal filler", "Fillers"],
+  ["cheek filler",  "Fillers"],
+  ["lip filler",    "Fillers"],
+  ["fillers",       "Fillers"],
+  ["filler",        "Fillers"],
+  // CoolSculpting
+  ["coolsculpting", "CoolSculpting"],
+  ["cool sculpting","CoolSculpting"],
+  ["fat freezing",  "CoolSculpting"],
+  // Venus Viva
+  ["venus viva", "Venus Viva"],
+  // Vaginal / Intimate
+  ["vaginal rejuvenation",  "Vaginal Rejuvenation"],
+  ["intimate rejuvenation", "Vaginal Rejuvenation"],
+  ["intimate peel",         "Intimate Peel"],
+  ["intimate peels",        "Intimate Peel"],
+  // Facials
+  ["express facial",  "Facials"],
+  ["$69 facial",      "Facials"],
+  ["facial",          "Facials"],
+  // Skin Tightening
+  ["skin tightening", "Skin Tightening"],
+  ["rf skin",         "Skin Tightening"],
+  ["radiofrequency",  "Skin Tightening"],
+  // Consultation
+  ["free consultation", "Consultation"],
+  ["consultation",      "Consultation"],
+  ["consult",           "Consultation"],
+  // Laser (generic — must come AFTER more specific laser entries)
+  ["laser", "Laser Hair Removal"],
+  // Venus Viva short form — after "venus viva" to avoid matching just "viva"
+  ["viva", "Venus Viva"],
+];
+
+// Keep the Record shape for backward compat
+const SERVICE_KEYWORDS: Record<string, string> = Object.fromEntries(SERVICE_KEYWORD_ENTRIES);
 
 const WEBSITE_FORM_SOURCE_KEYWORDS: Record<string, string> = {
   popup: "Popup",
@@ -178,10 +217,100 @@ export function normalizeService(value: unknown): string {
   if (!s) return "Other";
   const key = s.toLowerCase();
   if (serviceMappingCache?.[key]) return serviceMappingCache[key];
-  for (const [kw, canonical] of Object.entries(SERVICE_KEYWORDS)) {
+  for (const [kw, canonical] of SERVICE_KEYWORD_ENTRIES) {
     if (key.includes(kw)) return canonical;
   }
-  return s;
+  return "Other";
+}
+
+// Known multi-service combinations — checked before single-service scan
+const COMBINED_SERVICE_PATTERNS: [string[], string][] = [
+  [["microneedling", "salmon"],           "Microneedling & Salmon DNA"],
+  [["microneedling", "pdrn"],             "Microneedling & Salmon DNA"],
+  [["morpheus", "neck"],                  "Morpheus8 + Free Neck"],
+  [["lhr", "full body"],                  "Laser Hair Removal"],
+  [["laser hair removal", "full body"],   "Laser Hair Removal"],
+];
+
+function detectCombinedService(lower: string): string | null {
+  for (const [keywords, combined] of COMBINED_SERVICE_PATTERNS) {
+    if (keywords.every((kw) => lower.includes(kw))) return combined;
+  }
+  return null;
+}
+
+function scanForService(text: string | null | undefined): string {
+  if (!text) return "Other";
+  const lower = text.toLowerCase();
+  // Check manual cache first
+  if (serviceMappingCache?.[lower]) return serviceMappingCache[lower];
+  // Check combined patterns
+  const combined = detectCombinedService(lower);
+  if (combined) return combined;
+  // Single-service scan
+  for (const [kw, canonical] of SERVICE_KEYWORD_ENTRIES) {
+    if (lower.includes(kw)) return canonical;
+  }
+  return "Other";
+}
+
+export interface MetaServiceInference {
+  raw: string;
+  normalized: string;
+}
+
+/**
+ * Infers serviceRaw and serviceNormalized for a Meta ad record.
+ * Priority: campaignName → adSetName → adName → "Other"
+ */
+export function inferServiceFromMetaRecord(
+  campaignName: string | null | undefined,
+  adSetName?: string | null,
+  adName?: string | null,
+): MetaServiceInference {
+  // Campaign name is primary signal
+  if (campaignName) {
+    const normalized = scanForService(campaignName);
+    if (normalized !== "Other") return { raw: campaignName, normalized };
+  }
+  // Ad set name
+  if (adSetName) {
+    const normalized = scanForService(adSetName);
+    if (normalized !== "Other") return { raw: adSetName, normalized };
+  }
+  // Ad name
+  if (adName) {
+    const normalized = scanForService(adName);
+    if (normalized !== "Other") return { raw: adName, normalized };
+  }
+  return { raw: campaignName ?? adSetName ?? adName ?? "Other", normalized: "Other" };
+}
+
+/**
+ * Infers serviceRaw and serviceNormalized for a Website lead record.
+ * Priority: explicit service field → formName → websiteFormSource → pageUrl → landingPageUrl
+ */
+export function inferServiceFromWebsiteRecord(
+  serviceField: string | null | undefined,
+  formName?: string | null,
+  websiteFormSource?: string | null,
+  pageUrl?: string | null,
+  landingPageUrl?: string | null,
+): MetaServiceInference {
+  if (serviceField) {
+    const normalized = scanForService(serviceField);
+    if (normalized !== "Other") return { raw: serviceField, normalized };
+    // Still set raw even if we can't map it; default to General Consultation
+    return { raw: serviceField, normalized: "General Consultation" };
+  }
+  for (const candidate of [formName, websiteFormSource, pageUrl, landingPageUrl]) {
+    if (candidate) {
+      const normalized = scanForService(candidate);
+      if (normalized !== "Other") return { raw: candidate, normalized };
+    }
+  }
+  // Website leads without any identifiable service are general consultation requests
+  return { raw: "General Consultation", normalized: "General Consultation" };
 }
 
 export function normalizeWebsiteFormSource(value: unknown): string {

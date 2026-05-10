@@ -14,6 +14,7 @@ import {
   inferWebsiteFormSource,
   isUnmappedClinic,
   isUnmappedService,
+  inferServiceFromWebsiteRecord,
 } from "@/lib/normalization";
 
 const GF_PAGE_SIZE = 100;
@@ -404,6 +405,23 @@ function parseEntry(entry: any, formTitleMap?: Map<string, string>): {
     serviceNorm = normalizeService(serviceRaw);
   } catch (e: any) {
     errors.push({ entryId, formId, field: "serviceNorm", message: `service mapping error: ${toSafeString(e?.message)}` });
+  }
+
+  // If explicit service field gave us "Other", try inferring from form metadata
+  if (serviceNorm === "Other") {
+    try {
+      const inferred = inferServiceFromWebsiteRecord(
+        undefined, // no explicit serviceRaw — already tried above
+        formName,
+        formSourceNorm,
+        pageUrl,
+        landingPageUrl,
+      );
+      if (inferred.normalized !== "Other") {
+        serviceNorm = inferred.normalized;
+        if (!serviceRaw) serviceRaw = inferred.raw !== "Other" ? inferred.raw : undefined;
+      }
+    } catch { /* non-fatal */ }
   }
 
   try {
