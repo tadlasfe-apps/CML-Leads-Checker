@@ -225,15 +225,168 @@ export function inferWebsiteFormSource(
   const name = normalizeLower(formName);
   const url  = normalizeLower(pageUrl);
 
-  if (name.includes("quiz") || url.includes("quiz"))                                                          return "Website Quiz";
+  if (name.includes("quiz") || name.includes("multi step") || url.includes("quiz"))                          return "Website Quiz";
   if (name.includes("popup") || name.includes("pop-up") || name.includes("pop up") || url.includes("popup")) return "Popup";
   if (name.includes("exit intent") || name.includes("exit-intent"))                                          return "Exit Intent Popup";
-  if (name.includes("landing") || url.includes("/lp/") || url.includes("/landing")) return "Landing Page Form";
-  if (name.includes("promo") || url.includes("/promo"))                          return "Promo Page Form";
-  if (name.includes("free consultation") || name.includes("book a free"))        return "Free Consultation Form";
-  if (name.includes("contact"))                                                   return "Contact Form";
-  if (name.includes("service") || name.includes("treatment"))                    return "Service Page Form";
+  if (name.includes("franchise"))                                                                             return "Franchise Form";
+  if (name.includes("location single") || name.includes("location form") ||
+      name.includes("location page") || url.includes("/location"))                                           return "Location Form";
+  if (name.includes("landing") || url.includes("/lp/") || url.includes("/landing"))                         return "Landing Page Form";
+  if (name.includes("promo") || url.includes("/promo"))                                                      return "Promo Page Form";
+  if (name.includes("free consultation") || name.includes("book a free"))                                    return "Free Consultation Form";
+  if (name.includes("contact"))                                                                               return "Contact Form";
+  if (name.includes("service") || name.includes("treatment"))                                                return "Service Page Form";
   return "Unknown";
+}
+
+/**
+ * Website form sources that should be excluded from lead counts throughout the app.
+ * Entries from these sources appear in the table with an "Excluded" status but are
+ * not counted in KPI totals or cross-source comparisons.
+ */
+export const EXCLUDED_WEBSITE_FORM_SOURCES: string[] = ["Franchise Form"];
+
+// ─── Meta Clinic Location Inference ──────────────────────────────────────────
+
+export const CORPORATE_META_ACCOUNTS = [
+  "canada medlaser corporate",
+  "cml corporate",
+  "corporate",
+  "canada medlaser clinics",
+  "canada medlaser",
+];
+
+// Direct account-name → clinic map (keyed lowercase)
+const META_ACCOUNT_CLINIC_MAP: Record<string, string> = {
+  "cml queen west":       "Queen West",
+  "cml thornhill":        "Thornhill",
+  "cml yorkville":        "Yorkville",
+  "cml oakville":         "Oakville",
+  "cml burlington":       "Burlington",
+  "cml scarborough new":  "Scarborough",
+  "cml scarborough":      "Scarborough",
+  "cml newmarket":        "Newmarket",
+  "cml richmond hill":    "Richmond Hill",
+  "cml mississauga":      "Mississauga",
+  "cml maple":            "Maple",
+  "cml whitby":           "Whitby",
+  "cml ajax":             "Ajax",
+  "cml pickering":        "Pickering",
+  "cml north york":       "North York",
+  "cml downtown toronto": "Downtown Toronto",
+  "cml etobicoke":        "Etobicoke",
+  "cml vaughan":          "Vaughan",
+  "cml midtown":          "Midtown",
+  "cml toronto midtown":  "Midtown",
+  "cml toronto yorkville":"Yorkville",
+  "cml toronto queen west":"Queen West",
+  "cml toronto":          "Toronto",
+};
+
+// Ordered keyword list for scanning campaign/adset/ad names
+// More specific keywords must come before shorter substrings
+export const META_CAMPAIGN_CLINIC_KEYWORDS: [string, string][] = [
+  ["queen west",      "Queen West"],
+  ["scarborough new", "Scarborough"],
+  ["toronto midtown", "Midtown"],
+  ["toronto yorkville","Yorkville"],
+  ["downtown toronto","Downtown Toronto"],
+  ["north york",      "North York"],
+  ["richmond hill",   "Richmond Hill"],
+  ["midtown",         "Midtown"],
+  ["yorkville",       "Yorkville"],
+  ["thornhill",       "Thornhill"],
+  ["vaughan",         "Vaughan"],
+  ["oakville",        "Oakville"],
+  ["burlington",      "Burlington"],
+  ["etobicoke",       "Etobicoke"],
+  ["scarborough",     "Scarborough"],
+  ["newmarket",       "Newmarket"],
+  ["mississauga",     "Mississauga"],
+  ["maple",           "Maple"],
+  ["whitby",          "Whitby"],
+  ["ajax",            "Ajax"],
+  ["pickering",       "Pickering"],
+  ["toronto",         "Toronto"],
+];
+
+function scanForClinic(text: string): string | null {
+  const lower = text.toLowerCase();
+  for (const [kw, normalized] of META_CAMPAIGN_CLINIC_KEYWORDS) {
+    if (lower.includes(kw)) return normalized;
+  }
+  return null;
+}
+
+export interface MetaLocationManualMapping {
+  matchType: string;
+  matchValue: string;
+  mappedClinicLocation: string;
+  priority?: number;
+}
+
+/**
+ * Infers clinicLocationRaw and clinicLocationNormalized for a Meta ad record.
+ *
+ * Priority:
+ * 1. Manual override mappings (DB-loaded, sorted by priority desc)
+ * 2. If account is clinic-specific → map from account name
+ * 3. If account is corporate/shared → scan campaign name, then adset, then ad name
+ * 4. Unknown
+ */
+export function inferClinicFromMetaRecord(
+  accountName: string | null | undefined,
+  campaignName: string | null | undefined,
+  adSetName?: string | null,
+  adName?: string | null,
+  manualMappings: MetaLocationManualMapping[] = [],
+): { raw: string; normalized: string } {
+  const accLow  = normalizeLower(accountName);
+  const campLow = normalizeLower(campaignName);
+  const adsetLow = normalizeLower(adSetName);
+  const adLow   = normalizeLower(adName);
+
+  // 1. Manual overrides — check in priority order (already sorted by caller)
+  for (const m of manualMappings) {
+    if (!m.mappedClinicLocation) continue;
+    const mv = m.matchValue.toLowerCase();
+    if (m.matchType === "accountName"  && accLow.includes(mv))  return { raw: accountName  ?? m.mappedClinicLocation, normalized: m.mappedClinicLocation };
+    if (m.matchType === "campaignName" && campLow.includes(mv)) return { raw: campaignName ?? m.mappedClinicLocation, normalized: m.mappedClinicLocation };
+    if (m.matchType === "adSetName"    && adsetLow.includes(mv))return { raw: adSetName    ?? m.mappedClinicLocation, normalized: m.mappedClinicLocation };
+    if (m.matchType === "adName"       && adLow.includes(mv))   return { raw: adName       ?? m.mappedClinicLocation, normalized: m.mappedClinicLocation };
+  }
+
+  // 2. Corporate account check
+  const isCorporate = CORPORATE_META_ACCOUNTS.some((c) => accLow === c || accLow.includes(c));
+
+  if (!isCorporate && accountName) {
+    // Direct map from account name
+    const direct = META_ACCOUNT_CLINIC_MAP[accLow];
+    if (direct) return { raw: accountName, normalized: direct };
+    // Keyword scan on account name
+    const kw = scanForClinic(accountName);
+    if (kw) return { raw: accountName, normalized: kw };
+  }
+
+  // 3. Scan campaign name
+  if (campaignName) {
+    const kw = scanForClinic(campaignName);
+    if (kw) return { raw: campaignName, normalized: kw };
+  }
+
+  // 4. Scan ad set name
+  if (adSetName) {
+    const kw = scanForClinic(adSetName);
+    if (kw) return { raw: adSetName, normalized: kw };
+  }
+
+  // 5. Scan ad name
+  if (adName) {
+    const kw = scanForClinic(adName);
+    if (kw) return { raw: adName, normalized: kw };
+  }
+
+  return { raw: accountName ?? campaignName ?? "Unknown", normalized: "Unknown" };
 }
 
 export function isUnmappedClinic(value: string): boolean {

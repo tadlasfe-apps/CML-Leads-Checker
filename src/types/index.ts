@@ -8,7 +8,8 @@ export type AuditStatus =
   | "GHL_TO_ZENOTI_ISSUE"
   | "BOTH_ISSUES"
   | "NEEDS_MAPPING"
-  | "NEEDS_REVIEW";
+  | "NEEDS_REVIEW"
+  | "EXCLUDED";
 
 export type DiscrepancyLocation =
   | "NONE"
@@ -130,6 +131,7 @@ export interface WebsiteFormRow {
   websiteToZenotiMatchRate: number;
   status: AuditStatus;
   lastSubmissionAt: string | null;
+  excludedFromLeadCount: boolean;
 }
 
 // ─── Meta Leads ──────────────────────────────────────────────────────────────

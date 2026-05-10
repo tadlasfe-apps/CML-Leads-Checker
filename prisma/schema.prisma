@@ -287,3 +287,16 @@ model WebsiteFormNameMapping {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
+
+model MetaLocationMapping {
+  id                   String   @id @default(cuid())
+  matchType            String   // "accountName" | "campaignName" | "adSetName" | "adName"
+  matchValue           String   // substring to match (case-insensitive contains)
+  mappedClinicLocation String   // normalized clinic location label
+  priority             Int      @default(0) // higher = checked first
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([matchType, matchValue])
+}

@@ -172,22 +172,25 @@ function ApiPullSection({
   onComplete: () => void;
   metaAccountCount?: number;
 }) {
-  const [loading,       setLoading]       = useState(false);
-  const [from,          setFrom]          = useState(sevenDaysAgoStr);
-  const [to,            setTo]            = useState(todayStr);
-  const [result,        setResult]        = useState<{
+  const [loading,             setLoading]             = useState(false);
+  const [from,                setFrom]                = useState(sevenDaysAgoStr);
+  const [to,                  setTo]                  = useState(todayStr);
+  const [result,              setResult]              = useState<{
     fetched: number; created: number; skipped: number;
     warning?: string; step?: string; partialSuccess?: boolean;
     byAccount?: Array<{ accountId: string; accountName?: string; rowsFetched: number; leadsFound: number; spend: number }>;
     sampleSaved?: any[];
   } | null>(null);
-  const [error,         setError]         = useState<string | null>(null);
-  const [clearConfirm,  setClearConfirm]  = useState(false);
-  const [clearLoading,  setClearLoading]  = useState(false);
-  const [clearResult,   setClearResult]   = useState<{ deleted: number } | null>(null);
-  const [fixLoading,    setFixLoading]    = useState(false);
-  const [fixResult,     setFixResult]     = useState<{ totalPatched: number; groupsProcessed: number } | null>(null);
-  const [fixError,      setFixError]      = useState<string | null>(null);
+  const [error,               setError]               = useState<string | null>(null);
+  const [clearConfirm,        setClearConfirm]        = useState(false);
+  const [clearLoading,        setClearLoading]        = useState(false);
+  const [clearResult,         setClearResult]         = useState<{ deleted: number } | null>(null);
+  const [fixLoading,          setFixLoading]          = useState(false);
+  const [fixResult,           setFixResult]           = useState<{ totalPatched: number; groupsProcessed: number } | null>(null);
+  const [fixError,            setFixError]            = useState<string | null>(null);
+  const [metaBackfillLoading, setMetaBackfillLoading] = useState(false);
+  const [metaBackfillResult,  setMetaBackfillResult]  = useState<{ totalPatched: number; totalProcessed: number } | null>(null);
+  const [metaBackfillError,   setMetaBackfillError]   = useState<string | null>(null);
 
   async function runPull() {
     setLoading(true); setResult(null); setError(null);
@@ -226,6 +229,17 @@ function ApiPullSection({
       else setFixResult({ totalPatched: json.totalPatched ?? 0, groupsProcessed: json.groupsProcessed ?? 0 });
     } catch (err: any) { setFixError(err?.message ?? "Unexpected error"); }
     setFixLoading(false);
+  }
+
+  async function runMetaClinicBackfill() {
+    setMetaBackfillLoading(true); setMetaBackfillResult(null); setMetaBackfillError(null);
+    try {
+      const res  = await fetch("/api/debug/backfill-meta-clinic", { method: "POST" });
+      const json = await res.json();
+      if (json.error) setMetaBackfillError(json.error);
+      else setMetaBackfillResult({ totalPatched: json.totalPatched ?? 0, totalProcessed: json.totalProcessed ?? 0 });
+    } catch (err: any) { setMetaBackfillError(err?.message ?? "Unexpected error"); }
+    setMetaBackfillLoading(false);
   }
 
   async function runClear() {
@@ -361,6 +375,33 @@ function ApiPullSection({
               </span>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Backfill Meta Clinic Mapping (Meta only) */}
+      {isMeta && (
+        <div className="border-t pt-3 mt-1 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Data Repair</p>
+          <p className="text-xs text-muted-foreground">
+            Re-infers <code className="bg-gray-100 px-1 rounded">clinicLocationNormalized</code> for all existing Meta records
+            using account name and campaign name. Does not call Meta API.
+          </p>
+          <Button size="sm" variant="outline" onClick={runMetaClinicBackfill} disabled={metaBackfillLoading}
+            className="flex items-center gap-1.5 text-xs h-7">
+            {metaBackfillLoading
+              ? <><Loader2 className="w-3 h-3 animate-spin" /> Backfilling…</>
+              : <><RefreshCw className="w-3 h-3" /> Backfill Meta Clinic Mapping</>}
+          </Button>
+          {metaBackfillError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 flex items-start gap-2">
+            <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
+            <p className="text-xs text-red-700">{metaBackfillError}</p>
+          </div>}
+          {metaBackfillResult && <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 flex items-center gap-2">
+            <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0" />
+            <span className="text-xs text-green-800">
+              Patched <strong>{metaBackfillResult.totalPatched}</strong> of {metaBackfillResult.totalProcessed} Meta records.
+            </span>
+          </div>}
         </div>
       )}
 

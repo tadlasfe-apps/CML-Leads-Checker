@@ -14,6 +14,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     else if (type === "service") await prisma.serviceMapping.delete({ where: { id } });
     else if (type === "websiteFormSource") await prisma.websiteFormSourceMapping.delete({ where: { id } });
     else if (type === "websiteFormName") await prisma.websiteFormNameMapping.delete({ where: { id } });
+    else if (type === "metaLocation") await prisma.metaLocationMapping.delete({ where: { id } });
     else return NextResponse.json({ error: "Unknown type" }, { status: 400 });
     return NextResponse.json({ success: true });
   } catch {

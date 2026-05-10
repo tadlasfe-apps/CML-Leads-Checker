@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { inferClinicFromMetaRecord } from "@/lib/normalization";
 
 // Only the canonical Meta Ads "lead" action type is counted.
 // All other action types (onsite_conversion.lead_grouped, leadgen_grouped, etc.)
@@ -98,6 +99,16 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // Load manual Meta location mappings
+  let metaLocationMappings: Array<{ matchType: string; matchValue: string; mappedClinicLocation: string; priority: number }> = [];
+  try {
+    metaLocationMappings = await prisma.metaLocationMapping.findMany({
+      where: { active: true },
+      orderBy: { priority: "desc" },
+      select: { matchType: true, matchValue: true, mappedClinicLocation: true, priority: true },
+    });
+  } catch { /* table may not exist yet */ }
+
   try {
     const allRows: any[] = [];
     const errors: string[] = [];
@@ -159,6 +170,14 @@ export async function POST(req: NextRequest) {
       const externalId =
         `META_AGG|${accountId}|${date}|${row.campaign_id ?? ""}|${row.adset_id ?? ""}|${row.ad_id ?? ""}`;
 
+      const clinicInferred = inferClinicFromMetaRecord(
+        row.account_name,
+        row.campaign_name,
+        row.adset_name,
+        row.ad_name,
+        metaLocationMappings,
+      );
+
       records.push({
         sourceSystem: "META" as const,
         recordType: "AGGREGATE_REPORT" as const,
@@ -183,6 +202,8 @@ export async function POST(req: NextRequest) {
         reach: row.reach ? parseInt(row.reach, 10) : undefined,
         clicks: row.clicks ? parseInt(row.clicks, 10) : undefined,
         linkClicks: row.inline_link_clicks ? parseInt(row.inline_link_clicks, 10) : undefined,
+        clinicLocationRaw:        clinicInferred.raw,
+        clinicLocationNormalized: clinicInferred.normalized,
         rawPayload: row,  // full row including all action types for reference
       });
     }

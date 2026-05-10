@@ -95,12 +95,16 @@ function WebsiteLeadsPageInner() {
       return (av > bv ? 1 : av < bv ? -1 : 0) * (sortDir === "asc" ? 1 : -1);
     });
 
+  // Exclude franchise / non-lead forms from KPI totals
   const totals = filtered.reduce(
-    (acc, r) => ({
-      total:  acc.total  + r.totalSubmissions,
-      unique: acc.unique + r.uniqueLeads,
-      dupes:  acc.dupes  + r.duplicateCount,
-    }),
+    (acc, r) => {
+      if (r.excludedFromLeadCount) return acc;
+      return {
+        total:  acc.total  + r.totalSubmissions,
+        unique: acc.unique + r.uniqueLeads,
+        dupes:  acc.dupes  + r.duplicateCount,
+      };
+    },
     { total: 0, unique: 0, dupes: 0 }
   );
 
@@ -252,7 +256,7 @@ function WebsiteLeadsPageInner() {
                 </TableHeader>
                 <TableBody>
                   {filtered.map((row, i) => (
-                    <TableRow key={`${row.id}-${i}`} className="text-sm">
+                    <TableRow key={`${row.id}-${i}`} className={`text-sm ${row.excludedFromLeadCount ? "opacity-50" : ""}`}>
                       <TableCell className="font-medium max-w-[220px] truncate" title={row.formName}>
                         {row.formName}
                         {row.pageUrl && (

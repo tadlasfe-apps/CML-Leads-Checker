@@ -26,8 +26,9 @@ function MetaLeadsPageInner() {
     return { preset, from: format(r.from, "yyyy-MM-dd"), to: format(r.to, "yyyy-MM-dd") };
   });
 
-  const [adAccountId, setAdAccountId] = useState(sp.get("adAccountId") || "");
-  const [search,      setSearch]      = useState("");
+  const [adAccountId,  setAdAccountId]  = useState(sp.get("adAccountId") || "");
+  const [clinicFilter, setClinicFilter] = useState("");
+  const [search,       setSearch]       = useState("");
   const [sortField,   setSortField]   = useState("reportDate");
   const [sortDir,     setSortDir]     = useState<"asc" | "desc">("desc");
   const [data, setData]   = useState<any | null>(null);
@@ -71,10 +72,11 @@ function MetaLeadsPageInner() {
     else { setSortField(field); setSortDir("desc"); }
   }
 
-  const allRows: any[]     = data?.rows ?? [];
-  const byCampaign: any[]  = data?.byCampaign ?? [];
-  const byAdAccount: any[] = data?.byAdAccount ?? [];
-  const adAccountCount: number = data?.adAccountCount ?? byAdAccount.length;
+  const allRows: any[]           = data?.rows ?? [];
+  const byCampaign: any[]        = data?.byCampaign ?? [];
+  const byAdAccount: any[]       = data?.byAdAccount ?? [];
+  const byClinicLocation: any[]  = data?.byClinicLocation ?? [];
+  const adAccountCount: number   = data?.adAccountCount ?? byAdAccount.length;
 
   const filtered = allRows
     .filter((r) => {
@@ -120,6 +122,19 @@ function MetaLeadsPageInner() {
                 <option value="">All Ad Accounts</option>
                 {accountOptions.map((o: any) => (
                   <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            )}
+            {/* Clinic location filter */}
+            {byClinicLocation.length > 0 && (
+              <select
+                value={clinicFilter}
+                onChange={(e) => setClinicFilter(e.target.value)}
+                className="border rounded px-2 py-1 text-xs text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring h-8"
+              >
+                <option value="">All Clinics</option>
+                {byClinicLocation.map((c: any) => (
+                  <option key={c.clinic} value={c.clinic}>{c.clinic}</option>
                 ))}
               </select>
             )}
@@ -233,6 +248,59 @@ function MetaLeadsPageInner() {
                       </TableRow>
                     );
                   })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Meta Leads by Clinic Location */}
+        {byClinicLocation.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-muted-foreground" />
+                Meta Leads by Clinic Location
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow className="text-xs">
+                    <TableHead>Clinic Location</TableHead>
+                    <TableHead>Ad Accounts</TableHead>
+                    <TableHead className="text-right">Leads</TableHead>
+                    <TableHead className="text-right">Spend</TableHead>
+                    <TableHead className="text-right">CPL</TableHead>
+                    <TableHead className="text-right">Campaigns</TableHead>
+                    <TableHead className="text-right">Ad Sets</TableHead>
+                    <TableHead className="text-right">Ads</TableHead>
+                    <TableHead className="text-right">Impressions</TableHead>
+                    <TableHead className="text-right">Reach</TableHead>
+                    <TableHead className="text-right">Clicks</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(clinicFilter
+                    ? byClinicLocation.filter((c: any) => c.clinic === clinicFilter)
+                    : byClinicLocation
+                  ).map((c: any) => (
+                    <TableRow key={c.clinic} className="text-sm">
+                      <TableCell className="font-medium">{c.clinic}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate" title={(c.accountNames ?? []).join(", ")}>
+                        {(c.accountNames ?? []).join(", ") || "—"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums font-semibold text-purple-600">{c.leads}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">${Number(c.spend).toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{c.cpl != null ? `$${c.cpl}` : "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{c.campaignCount}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{c.adSetCount}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{c.adCount}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{c.impressions?.toLocaleString() ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{c.reach?.toLocaleString() ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{c.clicks?.toLocaleString() ?? "—"}</TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
             </CardContent>

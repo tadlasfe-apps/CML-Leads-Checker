@@ -1,5 +1,5 @@
 import prisma from "./prisma";
-import { EXCLUDED_META_ACTION_TYPES } from "./normalization";
+import { EXCLUDED_META_ACTION_TYPES, EXCLUDED_WEBSITE_FORM_SOURCES } from "./normalization";
 import {
   format, startOfDay, endOfDay, startOfWeek,
   startOfMonth, startOfQuarter,
@@ -119,7 +119,8 @@ export async function getOverviewKPIs(
   const [websiteCount, metaSum, ghlCount, zenotiCount, dupeCount] =
     await Promise.all([
       prisma.leadSourceRecord.count({
-        where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: false },
+        where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: false,
+          websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
       }),
       prisma.leadSourceRecord.aggregate({
         where: {
@@ -137,7 +138,8 @@ export async function getOverviewKPIs(
         where: { ...baseWhere, ...ghlDW, sourceSystem: "ZENOTI", isAppointmentBased: false },
       }),
       prisma.leadSourceRecord.count({
-        where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: true },
+        where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: true,
+          websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
       }),
     ]);
 
@@ -216,7 +218,8 @@ export async function getLeadTimeline(
 
   const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
     prisma.leadSourceRecord.findMany({
-      where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: false },
+      where: { ...baseWhere, ...simpleDW, sourceSystem: "WEBSITE", isDuplicate: false,
+        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
       select: { createdAtSource: true, reportDate: true },
     }),
     prisma.leadSourceRecord.findMany({
@@ -339,7 +342,8 @@ export async function getSourceComparisonDrilldown(
   const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
     prisma.leadSourceRecord.groupBy({
       by: [groupField as any],
-      where: { ...webDrillDW, sourceSystem: "WEBSITE", isDuplicate: false },
+      where: { ...webDrillDW, sourceSystem: "WEBSITE", isDuplicate: false,
+        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -415,7 +419,8 @@ export async function getClinicBreakdown(
   const [websiteRows, metaRows, ghlRows, zenotiRows, dupeRows] = await Promise.all([
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: false },
+      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: false,
+        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -435,7 +440,8 @@ export async function getClinicBreakdown(
     }),
     prisma.leadSourceRecord.groupBy({
       by: ["clinicLocationNormalized"],
-      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: true },
+      where: { ...webClinicDW, sourceSystem: "WEBSITE", isDuplicate: true,
+        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
       _count: { id: true },
     }),
   ]);
@@ -489,7 +495,8 @@ export async function getServiceBreakdown(
   const [websiteRows, metaRows, ghlRows, zenotiRows] = await Promise.all([
     prisma.leadSourceRecord.groupBy({
       by: ["serviceNormalized"],
-      where: { ...webSvcDW, ...clinicWhere, sourceSystem: "WEBSITE", isDuplicate: false },
+      where: { ...webSvcDW, ...clinicWhere, sourceSystem: "WEBSITE", isDuplicate: false,
+        websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
       _count: { id: true },
     }),
     prisma.leadSourceRecord.groupBy({
@@ -655,7 +662,10 @@ export async function getWebsiteForms(
   for (const g of Array.from(groupMap.values()).sort((a, b) => b.total - a.total)) {
     const uniqueLeads    = Math.min(g.unique, g.total);
     const duplicateCount = Math.max(0, g.total - uniqueLeads);
-    const status: import("@/types").AuditStatus = uniqueLeads === 0 ? "NEEDS_REVIEW" : "PASSED";
+    const isExcluded     = EXCLUDED_WEBSITE_FORM_SOURCES.includes(g.websiteFormSource ?? "");
+    const status: import("@/types").AuditStatus = isExcluded
+      ? "EXCLUDED"
+      : uniqueLeads === 0 ? "NEEDS_REVIEW" : "PASSED";
     results.push({
       id:                    g.formName,
       formName:              g.formName,
@@ -674,6 +684,7 @@ export async function getWebsiteForms(
       websiteToZenotiMatchRate: 0,
       status,
       lastSubmissionAt: g.lastDate?.toISOString() ?? null,
+      excludedFromLeadCount: isExcluded,
     });
   }
   return results;
@@ -768,6 +779,20 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
     orderBy: { reportDate: "desc" },
   });
 
+  // byClinicLocation aggregation
+  const byClinicLocation = new Map<string, {
+    clinic: string;
+    leads: number;
+    spend: number;
+    impressions: number;
+    reach: number;
+    clicks: number;
+    campaignSet: Set<string>;
+    adSetSet: Set<string>;
+    adSet2: Set<string>;
+    accountNames: Set<string>;
+  }>();
+
   // Aggregate by campaign, result type, and ad account
   const byCampaign = new Map<string, { leads: number; spend: number; accountId: string | null; accountName: string | null }>();
   const byResultType = new Map<string, number>();
@@ -797,6 +822,23 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
     acctExisting.spend += spend;
     if (r.campaignName) acctExisting.campaignSet.add(r.campaignName);
     byAdAccount.set(acctId, acctExisting);
+
+    // Clinic location aggregation
+    const clinic = r.clinicLocationNormalized ?? "Unknown";
+    const clExisting = byClinicLocation.get(clinic) ?? {
+      clinic, leads: 0, spend: 0, impressions: 0, reach: 0, clicks: 0,
+      campaignSet: new Set<string>(), adSetSet: new Set<string>(), adSet2: new Set<string>(), accountNames: new Set<string>(),
+    };
+    clExisting.leads += leads;
+    clExisting.spend += spend;
+    clExisting.impressions += r.impressions ?? 0;
+    clExisting.reach += r.reach ?? 0;
+    clExisting.clicks += r.clicks ?? 0;
+    if (r.campaignName) clExisting.campaignSet.add(r.campaignName);
+    if (r.metaAdSetName) clExisting.adSetSet.add(r.metaAdSetName);
+    if (r.metaAdName) clExisting.adSet2.add(r.metaAdName);
+    if (r.metaAdAccountName) clExisting.accountNames.add(r.metaAdAccountName);
+    byClinicLocation.set(clinic, clExisting);
   }
 
   return {
@@ -812,6 +854,16 @@ export async function getMetaBreakdown(from?: string, to?: string, adAccountId?:
       .sort((a, b) => b.leads - a.leads),
     byAdAccount: Array.from(byAdAccount.values())
       .map(({ campaignSet, ...rest }) => ({ ...rest, campaignCount: campaignSet.size }))
+      .sort((a, b) => b.leads - a.leads),
+    byClinicLocation: Array.from(byClinicLocation.values())
+      .map(({ campaignSet, adSetSet, adSet2, accountNames, ...rest }) => ({
+        ...rest,
+        cpl: rest.leads > 0 ? Math.round((rest.spend / rest.leads) * 100) / 100 : null,
+        campaignCount: campaignSet.size,
+        adSetCount: adSetSet.size,
+        adCount: adSet2.size,
+        accountNames: Array.from(accountNames),
+      }))
       .sort((a, b) => b.leads - a.leads),
   };
 }

@@ -11,6 +11,7 @@ const auditConfig: Record<AuditStatus, { label: string; variant: BadgeVariant }>
   BOTH_ISSUES:           { label: "Both Issues",            variant: "destructive" },
   NEEDS_MAPPING:         { label: "Needs Mapping",          variant: "info" },
   NEEDS_REVIEW:          { label: "Needs Review",           variant: "purple" },
+  EXCLUDED:              { label: "Excluded",               variant: "outline" },
 };
 
 const discrepancyConfig: Record<DiscrepancyLocation, { label: string; variant: BadgeVariant }> = {

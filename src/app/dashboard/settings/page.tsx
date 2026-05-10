@@ -23,23 +23,47 @@ interface FormNameMapping extends Mapping {
   backendProvider: string | null;
 }
 
+interface MetaLocationMappingItem {
+  id: string;
+  matchType: string;
+  matchValue: string;
+  mappedClinicLocation: string;
+  priority: number;
+  active: boolean;
+}
+
 interface MappingData {
   clinics: Mapping[];
   services: Mapping[];
   websiteFormSources: Mapping[];
   websiteFormNames: FormNameMapping[];
+  metaLocations: MetaLocationMappingItem[];
 }
 
 const BACKEND_PROVIDERS = ["Gravity Forms", "WPForms", "Contact Form 7", "Elementor Forms", "Fluent Forms", "Formidable Forms", "Other"];
 
+const META_MATCH_TYPES = [
+  { value: "accountName",  label: "Account Name" },
+  { value: "campaignName", label: "Campaign Name" },
+  { value: "adSetName",    label: "Ad Set Name" },
+  { value: "adName",       label: "Ad Name" },
+];
+
 export default function SettingsPage() {
-  const [data, setData] = useState<MappingData>({ clinics: [], services: [], websiteFormSources: [], websiteFormNames: [] });
+  const [data, setData] = useState<MappingData>({ clinics: [], services: [], websiteFormSources: [], websiteFormNames: [], metaLocations: [] });
   const [loading, setLoading]   = useState(true);
   const [newRaw,  setNewRaw]    = useState("");
   const [newNorm, setNewNorm]   = useState("");
   const [newFormId, setNewFormId] = useState("");
   const [newProvider, setNewProvider] = useState("");
   const [saving, setSaving]     = useState(false);
+
+  // Meta Location Mapping state
+  const [mlMatchType,  setMlMatchType]  = useState("accountName");
+  const [mlMatchValue, setMlMatchValue] = useState("");
+  const [mlMappedLoc,  setMlMappedLoc]  = useState("");
+  const [mlPriority,   setMlPriority]   = useState(0);
+  const [mlSaving,     setMlSaving]     = useState(false);
 
   async function fetchMappings() {
     setLoading(true);
@@ -67,6 +91,25 @@ export default function SettingsPage() {
     setNewRaw(""); setNewNorm(""); setNewFormId(""); setNewProvider("");
     await fetchMappings();
     setSaving(false);
+  }
+
+  async function addMetaLocationMapping() {
+    if (!mlMatchValue.trim() || !mlMappedLoc.trim()) return;
+    setMlSaving(true);
+    await fetch("/api/mappings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "metaLocation",
+        matchType: mlMatchType,
+        matchValue: mlMatchValue.trim(),
+        normalizedValue: mlMappedLoc.trim(),
+        priority: mlPriority,
+      }),
+    });
+    setMlMatchValue(""); setMlMappedLoc(""); setMlPriority(0);
+    await fetchMappings();
+    setMlSaving(false);
   }
 
   async function deleteMapping(id: string, type: string) {
@@ -207,6 +250,7 @@ export default function SettingsPage() {
             <TabsTrigger value="services">Services ({data.services.length})</TabsTrigger>
             <TabsTrigger value="formSources">Form Sources ({data.websiteFormSources.length})</TabsTrigger>
             <TabsTrigger value="formNames">Form Names ({data.websiteFormNames.length})</TabsTrigger>
+            <TabsTrigger value="metaLocation">Meta Clinic Mapping ({data.metaLocations.length})</TabsTrigger>
           </TabsList>
 
           <TabsContent value="clinics">
@@ -271,6 +315,86 @@ export default function SettingsPage() {
                 </p>
                 {loading ? <p className="text-muted-foreground text-sm">Loading…</p>
                   : <FormNameMappingTable items={data.websiteFormNames} />}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="metaLocation">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Meta Clinic Location Mappings</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  Override automatic clinic inference for Meta ads. Match on account name, campaign name,
+                  ad set name, or ad name (case-insensitive substring). Higher priority = checked first.
+                  After adding mappings, run <strong>Backfill Meta Clinic Mapping</strong> from Data Pulls to apply to existing records.
+                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Select value={mlMatchType} onValueChange={setMlMatchType}>
+                    <SelectTrigger className="w-40"><SelectValue placeholder="Match type" /></SelectTrigger>
+                    <SelectContent>
+                      {META_MATCH_TYPES.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    placeholder="Match value (substring)"
+                    value={mlMatchValue}
+                    onChange={(e) => setMlMatchValue(e.target.value)}
+                    className="max-w-[220px]"
+                  />
+                  <span className="text-muted-foreground">→</span>
+                  <Input
+                    placeholder="Clinic location"
+                    value={mlMappedLoc}
+                    onChange={(e) => setMlMappedLoc(e.target.value)}
+                    className="max-w-[200px]"
+                  />
+                  <Input
+                    type="number"
+                    placeholder="Priority"
+                    value={mlPriority}
+                    onChange={(e) => setMlPriority(parseInt(e.target.value, 10) || 0)}
+                    className="w-20"
+                  />
+                  <Button size="sm" onClick={addMetaLocationMapping} disabled={mlSaving || !mlMatchValue.trim() || !mlMappedLoc.trim()}>
+                    <Plus className="w-4 h-4 mr-1" /> Add
+                  </Button>
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow className="text-xs">
+                      <TableHead>Match Type</TableHead>
+                      <TableHead>Match Value</TableHead>
+                      <TableHead>Mapped Clinic</TableHead>
+                      <TableHead className="text-right">Priority</TableHead>
+                      <TableHead></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {loading ? (
+                      <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-6">Loading…</TableCell></TableRow>
+                    ) : data.metaLocations.length === 0 ? (
+                      <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-6">No mappings defined</TableCell></TableRow>
+                    ) : data.metaLocations.map((m) => (
+                      <TableRow key={m.id}>
+                        <TableCell className="text-sm font-medium">{META_MATCH_TYPES.find((t) => t.value === m.matchType)?.label ?? m.matchType}</TableCell>
+                        <TableCell className="font-mono text-sm">{m.matchValue}</TableCell>
+                        <TableCell className="font-medium">{m.mappedClinicLocation}</TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">{m.priority}</TableCell>
+                        <TableCell>
+                          <Button
+                            variant="ghost" size="icon"
+                            className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50"
+                            onClick={() => deleteMapping(m.id, "metaLocation")}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </CardContent>
             </Card>
           </TabsContent>
