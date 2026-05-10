@@ -470,21 +470,39 @@ const DATE_BASIS_OPTIONS: { value: DateBasis; label: string }[] = [
 ];
 
 function GhlDiagPanel({ diag }: { diag: any }) {
+  const stoppedLabels: Record<string, string> = {
+    no_next_page:              "No next page (all records fetched)",
+    max_pages_reached:         "Max pages reached (30)",
+    max_records_reached:       "Max records reached (3 000)",
+    reached_older_than_range:  "Early stop — reached records older than selected range",
+    api_error:                 "API error",
+    test_mode_single_page:     "Test mode — single page only",
+    "—":                       "—",
+  };
+
   const rows: [string, React.ReactNode][] = [
-    ["Endpoint",                   <code className="text-xs font-mono break-all">{diag.url || diag.endpoint}</code>],
-    ["Method",                     diag.method ?? "GET"],
-    ["GHL_LOCATION_ID present",    diag.hasLocationId   ? "✓ yes" : "✗ missing"],
-    ["GHL_PIPELINE_ID present",    diag.hasPipelineId   ? "✓ yes" : "✗ missing"],
-    ["Query params",               <code className="text-xs font-mono">{JSON.stringify(diag.queryParams ?? {})}</code>],
-    ["Date range",                 diag.dateRange ?? "—"],
-    ["Date basis",                 diag.dateBasis ?? "—"],
-    ["API status code",            diag.apiStatusCode ?? "—"],
-    ["API response summary",       diag.responseSummary || "—"],
-    ["Records fetched",            <strong>{diag.recordsFetched ?? 0}</strong>],
-    ["After date filter",          diag.recordsAfterDateFilter ?? "—"],
-    ["Created",                    <strong className="text-green-700">{diag.recordsCreated ?? "—"}</strong>],
-    ["Skipped (already exist)",    diag.recordsSkipped ?? "—"],
+    ["Endpoint",                 <code className="text-xs font-mono break-all">{diag.firstUrl || diag.endpoint}</code>],
+    ["Method",                   diag.method ?? "GET"],
+    ["GHL_LOCATION_ID present",  diag.hasLocationId ? "✓ yes" : "✗ missing"],
+    ["GHL_PIPELINE_ID present",  diag.hasPipelineId ? "✓ yes" : "✗ missing"],
+    ["Query params (page 1)",    <code className="text-xs font-mono">{JSON.stringify(diag.firstQueryParams ?? diag.queryParams ?? {})}</code>],
+    ["Selected date range",      diag.dateRange ?? "—"],
+    ["Date basis",               diag.dateBasis ?? "—"],
+    ["API status code",          diag.apiStatusCode ?? "—"],
+    ["Total reported by API",    diag.totalReported != null ? <strong>{diag.totalReported.toLocaleString()}</strong> : "—"],
+    ["Pagination mode",          diag.paginationMode ?? "—"],
+    ["Pages fetched",            <strong>{diag.pagesFetched ?? 0}</strong>],
+    ["Records fetched",          <strong>{diag.recordsFetched ?? 0}</strong>],
+    ["Earliest fetched date",    diag.earliestFetchedDate ?? "—"],
+    ["Latest fetched date",      diag.latestFetchedDate   ?? "—"],
+    ["After date filter",        diag.recordsAfterDateFilter ?? "—"],
+    ["Created",                  <strong className="text-green-700">{diag.recordsCreated ?? "—"}</strong>],
+    ["Skipped (already exist)",  diag.recordsSkipped ?? "—"],
+    ["Stopped reason",           stoppedLabels[diag.stoppedReason] ?? diag.stoppedReason ?? "—"],
   ];
+
+  const dfr = diag.dateFieldRanges as Record<string, { earliest: string; latest: string; nonNullCount: number }> | undefined;
+  const dateSample = diag.dateSample as any[] | undefined;
 
   return (
     <div className="space-y-2 mt-2">
@@ -494,6 +512,8 @@ function GhlDiagPanel({ diag }: { diag: any }) {
           <p className="text-xs text-amber-800">{w}</p>
         </div>
       ))}
+
+      {/* Core diagnostics key-value table */}
       <div className="rounded-md border bg-muted/30 overflow-hidden">
         <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b uppercase tracking-wide">
           Diagnostics
@@ -507,6 +527,88 @@ function GhlDiagPanel({ diag }: { diag: any }) {
           ))}
         </div>
       </div>
+
+      {/* Date field ranges table (test mode only) */}
+      {dfr && (
+        <div className="rounded-md border bg-muted/30 overflow-hidden">
+          <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b uppercase tracking-wide">
+            Date Field Ranges (across fetched records)
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b bg-muted/20">
+                  <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Field group</th>
+                  <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Earliest</th>
+                  <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Latest</th>
+                  <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Non-null</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {[
+                  { key: "createdAt",   label: "createdAt / dateAdded / created_at" },
+                  { key: "updatedAt",   label: "updatedAt / dateUpdated / updated_at" },
+                  { key: "contactDate", label: "contact.dateAdded / contact.createdAt" },
+                ].map(({ key, label }) => {
+                  const r = dfr[key];
+                  if (!r) return null;
+                  return (
+                    <tr key={key}>
+                      <td className="px-3 py-1.5 font-mono text-muted-foreground">{label}</td>
+                      <td className="px-3 py-1.5 tabular-nums">{r.earliest}</td>
+                      <td className="px-3 py-1.5 tabular-nums">{r.latest}</td>
+                      <td className="px-3 py-1.5 tabular-nums text-right">{r.nonNullCount}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Date sample (first 5 + last 5) */}
+      {dateSample && dateSample.length > 0 && (
+        <div className="rounded-md border bg-muted/30 overflow-hidden">
+          <p className="text-xs font-medium text-muted-foreground px-3 py-1.5 border-b uppercase tracking-wide">
+            Date Sample — first 5 &amp; last 5 records
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs whitespace-nowrap">
+              <thead>
+                <tr className="border-b bg-muted/20">
+                  {["#", "Name / Contact", "createdAt", "dateAdded", "updatedAt", "dateUpdated", "→ Basis value", "Raw date keys"].map((h) => (
+                    <th key={h} className="text-left px-3 py-1.5 font-medium text-muted-foreground">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {dateSample.map((s: any, i: number) => (
+                  <tr key={i} className="hover:bg-muted/10">
+                    <td className="px-3 py-1.5 text-muted-foreground tabular-nums">{s._position ?? i + 1}</td>
+                    <td className="px-3 py-1.5 max-w-[160px] truncate" title={`${s.name} / ${s.contactName}`}>
+                      <span className="font-medium">{s.name ?? "—"}</span>
+                      {s.contactName && s.contactName !== "—" && (
+                        <span className="text-muted-foreground"> / {s.contactName}</span>
+                      )}
+                    </td>
+                    <td className={`px-3 py-1.5 tabular-nums ${s.createdAt !== "—" ? "" : "text-muted-foreground"}`}>{s.createdAt}</td>
+                    <td className={`px-3 py-1.5 tabular-nums ${s.dateAdded !== "—" ? "" : "text-muted-foreground"}`}>{s.dateAdded}</td>
+                    <td className={`px-3 py-1.5 tabular-nums ${s.updatedAt !== "—" ? "" : "text-muted-foreground"}`}>{s.updatedAt}</td>
+                    <td className={`px-3 py-1.5 tabular-nums ${s.dateUpdated !== "—" ? "" : "text-muted-foreground"}`}>{s.dateUpdated}</td>
+                    <td className={`px-3 py-1.5 tabular-nums font-semibold ${s.resolvedBasisValue && s.resolvedBasisValue !== "—" ? "text-blue-700" : "text-red-500"}`}>
+                      {s.resolvedBasisValue ?? "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-muted-foreground font-mono max-w-[220px] truncate" title={(s.rawDateKeys ?? []).join(", ")}>
+                      {(s.rawDateKeys ?? []).length > 0 ? (s.rawDateKeys as string[]).join(", ") : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -602,7 +704,7 @@ function GhlPullSection({
 
       {/* Labels */}
       <p className="text-xs text-muted-foreground">
-        <span className="text-amber-700 font-medium">Test GHL Pull</span> — fetches up to 20 records, no date filter, nothing saved.{" "}
+        <span className="text-amber-700 font-medium">Test GHL Pull</span> — fetches up to 100 records, no DB write, exposes raw date fields for diagnosis.{" "}
         <span className="font-medium">Pull via GHL API</span> — full pull with date filter, saves to checker.
       </p>
 

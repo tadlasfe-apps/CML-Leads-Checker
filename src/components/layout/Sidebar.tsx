@@ -3,20 +3,21 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, GitCompare, Globe, Share2, MapPin,
-  Stethoscope, Upload, Plug, Settings, ChevronRight,
+  Stethoscope, Upload, Plug, Settings, ChevronRight, Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { label: "Overview", href: "/dashboard/overview", icon: LayoutDashboard },
+  { label: "Overview",          href: "/dashboard/overview",          icon: LayoutDashboard },
   { label: "Source Comparison", href: "/dashboard/source-comparison", icon: GitCompare },
-  { label: "Website Leads", href: "/dashboard/website-leads", icon: Globe },
-  { label: "Meta Leads", href: "/dashboard/meta-leads", icon: Share2 },
-  { label: "Clinic Breakdown", href: "/dashboard/clinic-breakdown", icon: MapPin },
+  { label: "Website Leads",     href: "/dashboard/website-leads",     icon: Globe },
+  { label: "Meta Leads",        href: "/dashboard/meta-leads",        icon: Share2 },
+  { label: "GHL Breakdown",     href: "/dashboard/ghl-breakdown",     icon: Database },
+  { label: "Clinic Breakdown",  href: "/dashboard/clinic-breakdown",  icon: MapPin },
   { label: "Service Breakdown", href: "/dashboard/service-breakdown", icon: Stethoscope },
-  { label: "Imports", href: "/dashboard/imports", icon: Upload },
-  { label: "Data Pulls", href: "/dashboard/api-syncs", icon: Plug },
-  { label: "Mapping Settings", href: "/dashboard/settings", icon: Settings },
+  { label: "Imports",           href: "/dashboard/imports",           icon: Upload },
+  { label: "Data Pulls",        href: "/dashboard/api-syncs",         icon: Plug },
+  { label: "Mapping Settings",  href: "/dashboard/settings",          icon: Settings },
 ];
 
 export function Sidebar() {
