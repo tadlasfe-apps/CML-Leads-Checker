@@ -2,8 +2,8 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSourceComparison, getSourceComparisonDrilldown } from "@/lib/data";
-import type { DateGrouping, ReportingTimezone } from "@/types";
+import { getSourceComparison, getSourceComparisonDrilldown, getSourceComparisonDims } from "@/lib/data";
+import type { DateGrouping, ReportingTimezone, ComparisonDimension } from "@/types";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
@@ -14,6 +14,8 @@ export async function GET(req: NextRequest) {
   const groupBy     = (searchParams.get("groupBy") || "daily") as DateGrouping;
   const timezone    = (searchParams.get("timezone") || "America/Toronto") as ReportingTimezone;
   const adAccountId = searchParams.get("adAccountId") || undefined;
+  // Dimension grouping: "date" | "date+clinic" | "date+service" | "date+clinic+service"
+  const dimensionGroupBy = (searchParams.get("dimensionGroupBy") || "date") as ComparisonDimension;
 
   try {
     if (searchParams.get("drilldown") === "true") {
@@ -22,7 +24,16 @@ export async function GET(req: NextRequest) {
       const by = (searchParams.get("by") || "clinic") as "clinic" | "service" | "websiteFormSource" | "campaign";
       return NextResponse.json(await getSourceComparisonDrilldown(periodStart, periodEnd, by));
     }
-    // Always return { rows, _error? } shape so the page can distinguish errors from empty results.
+
+    // Multi-dimensional mode when dimensionGroupBy includes clinic or service
+    if (dimensionGroupBy !== "date") {
+      const { rows, diagnostics } = await getSourceComparisonDims(
+        from, to, groupBy, timezone, clinic, service, dimensionGroupBy, adAccountId,
+      );
+      return NextResponse.json({ rows, diagnostics });
+    }
+
+    // Date-only mode (existing behavior)
     const rows = await getSourceComparison(from, to, groupBy, timezone, clinic, service, adAccountId);
     return NextResponse.json({ rows });
   } catch (err: any) {

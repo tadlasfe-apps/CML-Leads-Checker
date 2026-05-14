@@ -322,16 +322,19 @@ function parseGhlRow(row: Record<string, string>): ParsedRecord {
   const email        = h(row, "email", "email address");
   const phone        = h(row, "phone", "phone number", "mobile");
 
-  // Clinic — try explicit columns first, then infer from opportunity name / source
-  const clinicRaw = h(row,
-    "clinic location", "clinic", "location", "preferred location",
-    "centre", "center", "branch", "store", "cml location",
-    "selected location", "preferred clinic");
+  // Clinic — "Manual Location" first, then "Location", then other variants
+  // h() returns first non-empty match in order
+  const clinicRaw =
+    h(row, "manual location", "manual_location", "manuallocation") ||
+    h(row, "location") ||
+    h(row, "clinic location", "clinic", "preferred location",
+      "centre", "center", "branch", "store", "cml location",
+      "selected location", "preferred clinic");
 
-  // Service — try explicit columns first
+  // Service — try explicit columns first; "requested service" added
   const serviceRaw = h(row,
     "service", "treatment", "interested service", "selected service",
-    "procedure", "concern", "offer", "promo", "lead service");
+    "requested service", "procedure", "concern", "offer", "promo", "lead service");
 
   const pipeline   = h(row, "pipeline", "pipeline name");
   const pipelineId = h(row, "pipeline id", "pipelineid");

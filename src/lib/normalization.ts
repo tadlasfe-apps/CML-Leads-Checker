@@ -40,21 +40,30 @@ export function normalizeName(name: unknown): string {
 // ─── Keyword maps ─────────────────────────────────────────────────────────────
 
 const CLINIC_KEYWORDS: Record<string, string> = {
-  "toronto midtown": "Toronto Midtown",
-  midtown: "Toronto Midtown",
-  toronto: "Toronto",
+  // Canonical names — ordered most-specific first
+  "scarborough new": "Scarborough",
+  "toronto midtown": "Midtown",
+  "toronto yorkville": "Yorkville",
+  "toronto queen west": "Queen West",
+  "queen west": "Queen West",
+  midtown: "Midtown",
   yorkville: "Yorkville",
-  mississauga: "Mississauga",
+  thornhill: "Thornhill",
+  vaughan: "Vaughan",
   oakville: "Oakville",
-  whitby: "Whitby",
+  burlington: "Burlington",
+  etobicoke: "Etobicoke",
   scarborough: "Scarborough",
   newmarket: "Newmarket",
-  vaughan: "Vaughan",
+  mississauga: "Mississauga",
+  maple: "Maple",
+  whitby: "Whitby",
+  barrie: "Barrie",
+  toronto: "Toronto",
+  // Legacy / non-canonical kept for backward compat
   "richmond hill": "Richmond Hill",
-  thornhill: "Thornhill",
-  etobicoke: "Etobicoke",
   "north york": "North York",
-  burlington: "Burlington",
+  "downtown toronto": "Downtown Toronto",
   hamilton: "Hamilton",
   kitchener: "Kitchener",
   london: "London",
@@ -111,10 +120,10 @@ const SERVICE_KEYWORD_ENTRIES: [string, string][] = [
   ["intimate rejuvenation", "Vaginal Rejuvenation"],
   ["intimate peel",         "Intimate Peel"],
   ["intimate peels",        "Intimate Peel"],
-  // Facials
-  ["express facial",  "Facials"],
-  ["$69 facial",      "Facials"],
-  ["facial",          "Facials"],
+  // Facials / Express Facial
+  ["express facial",  "Express Facial"],
+  ["$69 facial",      "Express Facial"],
+  ["facial",          "Express Facial"],
   // Skin Tightening
   ["skin tightening", "Skin Tightening"],
   ["rf skin",         "Skin Tightening"],
@@ -415,28 +424,32 @@ const META_ACCOUNT_CLINIC_MAP: Record<string, string> = {
 // Ordered keyword list for scanning campaign/adset/ad names
 // More specific keywords must come before shorter substrings
 export const META_CAMPAIGN_CLINIC_KEYWORDS: [string, string][] = [
-  ["queen west",      "Queen West"],
-  ["scarborough new", "Scarborough"],
-  ["toronto midtown", "Midtown"],
+  // Most-specific multi-word first
+  ["queen west",       "Queen West"],
+  ["scarborough new",  "Scarborough"],
+  ["toronto midtown",  "Midtown"],
   ["toronto yorkville","Yorkville"],
-  ["downtown toronto","Downtown Toronto"],
-  ["north york",      "North York"],
-  ["richmond hill",   "Richmond Hill"],
-  ["midtown",         "Midtown"],
-  ["yorkville",       "Yorkville"],
-  ["thornhill",       "Thornhill"],
-  ["vaughan",         "Vaughan"],
-  ["oakville",        "Oakville"],
-  ["burlington",      "Burlington"],
-  ["etobicoke",       "Etobicoke"],
-  ["scarborough",     "Scarborough"],
-  ["newmarket",       "Newmarket"],
-  ["mississauga",     "Mississauga"],
-  ["maple",           "Maple"],
-  ["whitby",          "Whitby"],
-  ["ajax",            "Ajax"],
-  ["pickering",       "Pickering"],
-  ["toronto",         "Toronto"],
+  ["toronto queen west","Queen West"],
+  ["downtown toronto", "Downtown Toronto"],
+  ["north york",       "North York"],
+  ["richmond hill",    "Richmond Hill"],
+  // Single-word (canonical list)
+  ["midtown",          "Midtown"],
+  ["yorkville",        "Yorkville"],
+  ["thornhill",        "Thornhill"],
+  ["vaughan",          "Vaughan"],
+  ["oakville",         "Oakville"],
+  ["burlington",       "Burlington"],
+  ["etobicoke",        "Etobicoke"],
+  ["scarborough",      "Scarborough"],
+  ["newmarket",        "Newmarket"],
+  ["mississauga",      "Mississauga"],
+  ["maple",            "Maple"],
+  ["whitby",           "Whitby"],
+  ["barrie",           "Barrie"],
+  ["ajax",             "Ajax"],
+  ["pickering",        "Pickering"],
+  ["toronto",          "Toronto"],
 ];
 
 function scanForClinic(text: string): string | null {
@@ -528,16 +541,26 @@ export function isUnmappedService(value: string): boolean {
 
 // ─── GHL Inference ────────────────────────────────────────────────────────────
 
-// Custom field name keywords that likely hold a clinic/location value
+// "Manual Location" field name variants — checked at highest priority in GHL records
+const GHL_MANUAL_LOCATION_NAMES: string[] = [
+  "manual location", "manual_location", "manuallocation", "manualloc",
+  "ManualLocation", "Manual Location",
+];
+
+// "Location" field — exact name match, second priority
+const GHL_LOCATION_EXACT_NAMES: string[] = ["location", "Location"];
+
+// Custom field name keywords that likely hold a clinic/location value (lower priority)
 const GHL_CLINIC_FIELD_NAMES: string[] = [
-  "clinic", "location", "preferred location", "centre", "center",
+  "clinic", "preferred location", "centre", "center",
   "branch", "store", "cml location", "selected location", "preferred clinic",
 ];
 
 // Custom field name keywords that likely hold a service/treatment value
 const GHL_SERVICE_FIELD_NAMES: string[] = [
   "service", "treatment", "interested service", "selected service",
-  "procedure", "concern", "offer", "promo", "campaign", "lead service",
+  "requested service", "procedure", "concern", "offer", "promo",
+  "campaign", "lead service", "interest",
 ];
 
 function getCfValue(cf: unknown): string {
@@ -568,13 +591,16 @@ function safeCustomFields(opp: Record<string, unknown>): unknown[] {
  * Infers clinicLocationRaw and clinicLocationNormalized for a GHL opportunity.
  *
  * Priority:
- * 1. Custom fields whose name contains a clinic-related keyword
- * 2. contact.locationName / contact.location
- * 3. Opportunity name/title
- * 4. Contact tags
- * 5. Source / campaign / UTM fields
- * 6. All custom field values (keyword scan regardless of field name)
- * 7. Fallback → Unknown
+ * 1. Manual mapping DB cache (clinicMappingCache) applied to any candidate value
+ * 2. Custom field named "Manual Location" (and variants) — always used as raw if present
+ * 3. Custom field named "Location" (exact name)
+ * 4. Other clinic-related custom field names (clinic, centre, etc.)
+ * 5. contact.locationName / contact.location
+ * 6. Opportunity name/title
+ * 7. Contact tags
+ * 8. Source / campaign / UTM fields
+ * 9. All custom field values (keyword scan regardless of field name)
+ * 10. Fallback → Unknown
  */
 export function inferClinicFromGhlRecord(opp: unknown): { raw: string | undefined; normalized: string } {
   const o: Record<string, unknown> = (opp && typeof opp === "object") ? opp as Record<string, unknown> : {};
@@ -583,64 +609,108 @@ export function inferClinicFromGhlRecord(opp: unknown): { raw: string | undefine
 
   const customFields = safeCustomFields(o);
 
-  // 1. Custom fields with clinic-related names
+  // Helper: resolve raw text → normalized clinic using cache → keyword scan → normalizeClinicLocation
+  function resolve(raw: string): string | undefined {
+    if (!raw) return undefined;
+    const low = raw.toLowerCase().trim();
+    // 1. Manual DB mapping cache
+    if (clinicMappingCache?.[low]) return clinicMappingCache[low];
+    // 2. Keyword scan (most-specific first)
+    const kw = scanForClinic(raw);
+    if (kw) return kw;
+    // 3. normalizeClinicLocation fallback
+    const norm = normalizeClinicLocation(raw);
+    if (norm !== "Unknown") return norm;
+    return undefined;
+  }
+
+  // Helper: check if a CF name matches a name list (case-insensitive exact)
+  function cfNameMatches(name: string, list: string[]): boolean {
+    const low = name.toLowerCase().trim();
+    return list.some((n) => low === n.toLowerCase() || low === n.toLowerCase().replace(/\s/g, "_") || low === n.toLowerCase().replace(/[\s_]/g, ""));
+  }
+
+  // Step 1: "Manual Location" custom field — always wins as raw source if it has a value
+  for (const cf of customFields) {
+    const name  = getCfName(cf);
+    const value = getCfValue(cf);
+    if (!value) continue;
+    const isManualLocation = cfNameMatches(name, GHL_MANUAL_LOCATION_NAMES) ||
+      (name.includes("manual") && name.includes("loc"));
+    if (isManualLocation) {
+      // Use this raw value always; normalize it (may fall through to "Unknown")
+      const normalized = resolve(value) ?? "Unknown";
+      return { raw: value, normalized };
+    }
+  }
+
+  // Step 2: "Location" custom field — exact name
+  for (const cf of customFields) {
+    const name  = getCfName(cf);
+    const value = getCfValue(cf);
+    if (!value) continue;
+    if (cfNameMatches(name, GHL_LOCATION_EXACT_NAMES)) {
+      const normalized = resolve(value);
+      if (normalized) return { raw: value, normalized };
+      // Location field exists but value doesn't match any known clinic → keep raw, mark Unknown
+      return { raw: value, normalized: "Unknown" };
+    }
+  }
+
+  // Step 3: Other clinic-related custom fields
   for (const cf of customFields) {
     const name  = getCfName(cf);
     const value = getCfValue(cf);
     if (!value) continue;
     if (GHL_CLINIC_FIELD_NAMES.some((n) => name.includes(n))) {
-      const hit = scanForClinic(value);
-      if (hit) return { raw: value, normalized: hit };
-      const hit2 = normalizeClinicLocation(value);
-      if (hit2 !== "Unknown") return { raw: value, normalized: hit2 };
+      const normalized = resolve(value);
+      if (normalized) return { raw: value, normalized };
     }
   }
 
-  // 2. contact.locationName / contact.location
+  // Step 4: contact.locationName / contact.location
   const locationName = toSafeString(contact["locationName"] ?? contact["location"] ?? "").trim();
   if (locationName) {
-    const hit = scanForClinic(locationName);
-    if (hit) return { raw: locationName, normalized: hit };
-    const hit2 = normalizeClinicLocation(locationName);
-    if (hit2 !== "Unknown") return { raw: locationName, normalized: hit2 };
+    const normalized = resolve(locationName);
+    if (normalized) return { raw: locationName, normalized };
   }
 
-  // 3. Opportunity name
+  // Step 5: Opportunity name
   const oppName = toSafeString(o["name"] ?? "").trim();
   if (oppName) {
-    const hit = scanForClinic(oppName);
-    if (hit) return { raw: oppName, normalized: hit };
+    const kw = scanForClinic(oppName);
+    if (kw) return { raw: oppName, normalized: kw };
   }
 
-  // 4. Tags
+  // Step 6: Tags
   const tags = Array.isArray(contact["tags"]) ? contact["tags"] as unknown[] : [];
   for (const tag of tags) {
     const t = toSafeString(tag).trim();
     if (!t) continue;
-    const hit = scanForClinic(t);
-    if (hit) return { raw: t, normalized: hit };
+    const kw = scanForClinic(t);
+    if (kw) return { raw: t, normalized: kw };
   }
 
-  // 5. Source / campaign / UTM fields
-  const scanFields = [
+  // Step 7: Source / campaign / UTM fields
+  const scanCandidates = [
     toSafeString(contact["source"]),
     toSafeString(o["source"]),
     toSafeString(o["campaignName"] ?? o["campaign_name"]),
     toSafeString(contact["utmCampaign"] ?? contact["utm_campaign"]),
   ];
-  for (const s of scanFields) {
+  for (const s of scanCandidates) {
     const trimmed = s.trim();
     if (!trimmed) continue;
-    const hit = scanForClinic(trimmed);
-    if (hit) return { raw: trimmed, normalized: hit };
+    const kw = scanForClinic(trimmed);
+    if (kw) return { raw: trimmed, normalized: kw };
   }
 
-  // 6. All custom field values (regardless of field name)
+  // Step 8: All custom field values (keyword scan regardless of field name)
   for (const cf of customFields) {
     const value = getCfValue(cf);
     if (!value) continue;
-    const hit = scanForClinic(value);
-    if (hit) return { raw: value, normalized: hit };
+    const kw = scanForClinic(value);
+    if (kw) return { raw: value, normalized: kw };
   }
 
   return { raw: undefined, normalized: "Unknown" };
@@ -652,11 +722,12 @@ export function inferClinicFromGhlRecord(opp: unknown): { raw: string | undefine
  * Priority:
  * 1. Custom fields whose name contains a service-related keyword
  * 2. Opportunity name/title
- * 3. Pipeline stage name
+ * 3. Source / campaign / UTM fields
  * 4. Contact tags
- * 5. Source / campaign fields
- * 6. All custom field values (keyword scan)
- * 7. Fallback → Unknown
+ * 5. Pipeline stage name (last-resort — stage names often describe status, not service)
+ * 6. All custom field values (keyword scan regardless of field name)
+ * 7. rawPayload text scan
+ * 8. Fallback → Unknown
  */
 export function inferServiceFromGhlRecord(opp: unknown): { raw: string | undefined; normalized: string } {
   const o: Record<string, unknown> = (opp && typeof opp === "object") ? opp as Record<string, unknown> : {};
@@ -667,59 +738,69 @@ export function inferServiceFromGhlRecord(opp: unknown): { raw: string | undefin
 
   const customFields = safeCustomFields(o);
 
-  // 1. Custom fields with service-related names
+  // Helper: scanForService already checks serviceMappingCache first
+  function resolveService(raw: string): string | undefined {
+    if (!raw) return undefined;
+    const low = raw.toLowerCase().trim();
+    if (serviceMappingCache?.[low]) return serviceMappingCache[low];
+    const n = scanForService(raw);
+    return n !== "Other" ? n : undefined;
+  }
+
+  // Step 1: Custom fields with service-related names
   for (const cf of customFields) {
     const name  = getCfName(cf);
     const value = getCfValue(cf);
     if (!value) continue;
     if (GHL_SERVICE_FIELD_NAMES.some((n) => name.includes(n))) {
-      const normalized = scanForService(value);
-      if (normalized !== "Other") return { raw: value, normalized };
+      const normalized = resolveService(value);
+      if (normalized) return { raw: value, normalized };
     }
   }
 
-  // 2. Opportunity name
+  // Step 2: Opportunity name
   const oppName = toSafeString(o["name"] ?? "").trim();
   if (oppName) {
-    const normalized = scanForService(oppName);
-    if (normalized !== "Other") return { raw: oppName, normalized };
+    const normalized = resolveService(oppName);
+    if (normalized) return { raw: oppName, normalized };
   }
 
-  // 3. Stage name
-  const stageName = toSafeString(stage["name"] ?? o["pipelineStageName"] ?? "").trim();
-  if (stageName) {
-    const normalized = scanForService(stageName);
-    if (normalized !== "Other") return { raw: stageName, normalized };
+  // Step 3: Source / campaign / UTM fields
+  const srcCandidates = [
+    toSafeString(contact["source"]),
+    toSafeString(o["source"]),
+    toSafeString(o["campaignName"] ?? o["campaign_name"]),
+    toSafeString(contact["utmCampaign"] ?? contact["utm_campaign"]),
+  ];
+  for (const s of srcCandidates) {
+    const trimmed = s.trim();
+    if (!trimmed) continue;
+    const normalized = resolveService(trimmed);
+    if (normalized) return { raw: trimmed, normalized };
   }
 
-  // 4. Tags
+  // Step 4: Tags
   const tags = Array.isArray(contact["tags"]) ? contact["tags"] as unknown[] : [];
   for (const tag of tags) {
     const t = toSafeString(tag).trim();
     if (!t) continue;
-    const normalized = scanForService(t);
-    if (normalized !== "Other") return { raw: t, normalized };
+    const normalized = resolveService(t);
+    if (normalized) return { raw: t, normalized };
   }
 
-  // 5. Source / campaign fields
-  const scanFields = [
-    toSafeString(contact["source"]),
-    toSafeString(o["source"]),
-    toSafeString(o["campaignName"] ?? o["campaign_name"]),
-  ];
-  for (const s of scanFields) {
-    const trimmed = s.trim();
-    if (!trimmed) continue;
-    const normalized = scanForService(trimmed);
-    if (normalized !== "Other") return { raw: trimmed, normalized };
+  // Step 5: Pipeline stage name (fallback only — stages describe status, not service)
+  const stageName = toSafeString(stage["name"] ?? o["pipelineStageName"] ?? "").trim();
+  if (stageName) {
+    const normalized = resolveService(stageName);
+    if (normalized) return { raw: stageName, normalized };
   }
 
-  // 6. All custom field values
+  // Step 6: All custom field values (keyword scan regardless of field name)
   for (const cf of customFields) {
     const value = getCfValue(cf);
     if (!value) continue;
-    const normalized = scanForService(value);
-    if (normalized !== "Other") return { raw: value, normalized };
+    const normalized = resolveService(value);
+    if (normalized) return { raw: value, normalized };
   }
 
   return { raw: oppName || undefined, normalized: "Unknown" };

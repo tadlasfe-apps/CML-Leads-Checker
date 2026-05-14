@@ -19,8 +19,9 @@ function toZonedTime(date: Date, tz: string): Date {
 }
 import type {
   AuditStatus, DiscrepancyLocation, DateGrouping, ReportingTimezone,
+  ComparisonDimension,
   OverviewKPIs, TimelineEntry, SourceComparisonRow, ClinicBreakdownRow,
-  ServiceBreakdownRow, WebsiteFormRow,
+  ServiceBreakdownRow, WebsiteFormRow, SourceComparisonDiagnostics,
 } from "@/types";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -48,12 +49,22 @@ function sourceWhereDate(
   };
 }
 
+const UNMAPPED_LABELS = new Set(["Unknown", "Unknown / Needs Mapping", "Other", ""]);
+
 function computeAuditStatus(
   websiteLeads: number,
   metaLeads: number,
   ghlLeads: number,
-  zenotiLeads: number
+  zenotiLeads: number,
+  clinic?: string,
+  service?: string,
 ): AuditStatus {
+  // NEEDS_MAPPING when clinic or service dimension is unknown/unmapped
+  if (
+    (clinic !== undefined && UNMAPPED_LABELS.has(clinic)) ||
+    (service !== undefined && UNMAPPED_LABELS.has(service))
+  ) return "NEEDS_MAPPING";
+
   const src = websiteLeads + metaLeads;
   const srcGhlMatch = src === ghlLeads;
   const ghlZenotiMatch = ghlLeads === zenotiLeads;
@@ -65,8 +76,10 @@ function computeAuditStatus(
 }
 
 function computeDiscrepancyLocation(
-  src: number, ghlLeads: number, zenotiLeads: number
+  src: number, ghlLeads: number, zenotiLeads: number,
+  status?: AuditStatus,
 ): DiscrepancyLocation {
+  if (status === "NEEDS_MAPPING") return "NEEDS_MAPPING";
   const srcGhlMatch = src === ghlLeads;
   const ghlZenotiMatch = ghlLeads === zenotiLeads;
   if (srcGhlMatch && ghlZenotiMatch) return "NONE";
@@ -399,6 +412,207 @@ export async function getSourceComparisonDrilldown(
       status: computeAuditStatus(web, meta, ghl, zenoti),
     };
   }).sort((a, b) => (b.totalSourceLeads + b.ghlLeads) - (a.totalSourceLeads + a.ghlLeads));
+}
+
+// ─── Source Comparison Multi-Dimensional ─────────────────────────────────────
+
+/**
+ * Groups source comparison data by Date + optional Clinic and/or Service dimensions.
+ * Returns one row per unique (date, clinic?, service?) combination across all sources.
+ *
+ * Rows appear even if only one source has data — this is intentional for discrepancy detection.
+ */
+export async function getSourceComparisonDims(
+  from?: string,
+  to?: string,
+  grouping: DateGrouping = "daily",
+  tz: ReportingTimezone = "America/Toronto",
+  clinicFilter?: string,
+  serviceFilter?: string,
+  dimensionGroupBy: ComparisonDimension = "date+clinic+service",
+  adAccountId?: string,
+): Promise<{ rows: SourceComparisonRow[]; diagnostics: SourceComparisonDiagnostics }> {
+  const includeClinic  = dimensionGroupBy.includes("clinic");
+  const includeService = dimensionGroupBy.includes("service");
+
+  const UNKNOWN = "Unknown / Needs Mapping";
+
+  // Normalize a field value to its display label for grouping
+  function clinicKey(v: string | null | undefined): string {
+    const s = v?.trim();
+    return s && s !== "Unknown" && s !== "Other" ? s : UNKNOWN;
+  }
+  function serviceKey(v: string | null | undefined): string {
+    const s = v?.trim();
+    return s && s !== "Unknown" && s !== "Other" ? s : UNKNOWN;
+  }
+
+  const dateFilter   = buildDateFilter(from, to);
+  const simpleDW     = websiteDateWhereSimple(dateFilter);
+  const ghlDW        = dateFilter ? { createdAtSource: dateFilter } : {};
+  const metaDateWhere = dateFilter ? { reportDate: dateFilter } : {};
+
+  const clinicWhere   = clinicFilter  ? { clinicLocationNormalized:  clinicFilter  } : {};
+  const serviceWhere  = serviceFilter ? { serviceNormalized:         serviceFilter } : {};
+
+  // Fetch all records sequentially (avoids pgbouncer pool exhaustion)
+  const websiteRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...simpleDW,     ...clinicWhere, ...serviceWhere,
+      sourceSystem: "WEBSITE", isDuplicate: false,
+      websiteFormSource: { notIn: EXCLUDED_WEBSITE_FORM_SOURCES } },
+    select: { createdAtSource: true, reportDate: true, clinicLocationNormalized: true, serviceNormalized: true },
+  });
+
+  const metaRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...metaDateWhere, ...clinicWhere, ...serviceWhere,
+      sourceSystem: "META",
+      metaResultType: { notIn: EXCLUDED_META_ACTION_TYPES },
+      ...(adAccountId ? { metaAdAccountId: adAccountId } : {}) },
+    select: { reportDate: true, createdAtSource: true, clinicLocationNormalized: true, serviceNormalized: true, metaLeadCount: true },
+  });
+
+  const ghlRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlDW,        ...clinicWhere, ...serviceWhere,
+      sourceSystem: "GHL" },
+    select: { createdAtSource: true, clinicLocationNormalized: true, serviceNormalized: true },
+  });
+
+  const zenotiRecs = await prisma.leadSourceRecord.findMany({
+    where: { ...ghlDW,        ...clinicWhere, ...serviceWhere,
+      sourceSystem: "ZENOTI", isAppointmentBased: false },
+    select: { createdAtSource: true, leadCreatedDate: true, reportDate: true, clinicLocationNormalized: true, serviceNormalized: true },
+  });
+
+  // ── Build group key ────────────────────────────────────────────────────────
+  function groupKey(dateKey: string, clinic: string, service: string): string {
+    if (dimensionGroupBy === "date")               return dateKey;
+    if (dimensionGroupBy === "date+clinic")        return `${dateKey}|${clinic}`;
+    if (dimensionGroupBy === "date+service")       return `${dateKey}|${service}`;
+    return `${dateKey}|${clinic}|${service}`;
+  }
+
+  type Entry = { dateKey: string; clinic: string; service: string; web: number; meta: number; ghl: number; zenoti: number };
+  const map = new Map<string, Entry>();
+
+  function getOrCreate(dateKey: string, clinic: string, service: string): Entry {
+    const k = groupKey(dateKey, clinic, service);
+    if (!map.has(k)) {
+      map.set(k, { dateKey, clinic, service, web: 0, meta: 0, ghl: 0, zenoti: 0 });
+    }
+    return map.get(k)!;
+  }
+
+  // WEBSITE
+  let wTotal = 0; let wUnkClinic = 0; let wUnkService = 0;
+  for (const r of websiteRecs) {
+    const d = r.createdAtSource ?? r.reportDate;
+    if (!d) continue;
+    const dk = getPeriodKey(d, grouping, tz);
+    const c  = includeClinic  ? clinicKey(r.clinicLocationNormalized)  : UNKNOWN;
+    const s  = includeService ? serviceKey(r.serviceNormalized)        : UNKNOWN;
+    getOrCreate(dk, c, s).web++;
+    wTotal++;
+    if (clinicKey(r.clinicLocationNormalized)  === UNKNOWN) wUnkClinic++;
+    if (serviceKey(r.serviceNormalized)         === UNKNOWN) wUnkService++;
+  }
+
+  // META (sum metaLeadCount)
+  let mTotal = 0; let mUnkClinic = 0; let mUnkService = 0;
+  for (const r of metaRecs) {
+    const d = r.reportDate ?? r.createdAtSource;
+    if (!d) continue;
+    const dk    = getPeriodKey(d, grouping, tz);
+    const c     = includeClinic  ? clinicKey(r.clinicLocationNormalized)  : UNKNOWN;
+    const s     = includeService ? serviceKey(r.serviceNormalized)        : UNKNOWN;
+    const leads = r.metaLeadCount ?? 0;
+    getOrCreate(dk, c, s).meta += leads;
+    mTotal += leads;
+    if (clinicKey(r.clinicLocationNormalized)  === UNKNOWN) mUnkClinic  += leads;
+    if (serviceKey(r.serviceNormalized)         === UNKNOWN) mUnkService += leads;
+  }
+
+  // GHL
+  let gTotal = 0; let gUnkClinic = 0; let gUnkService = 0;
+  for (const r of ghlRecs) {
+    if (!r.createdAtSource) continue;
+    const dk = getPeriodKey(r.createdAtSource, grouping, tz);
+    const c  = includeClinic  ? clinicKey(r.clinicLocationNormalized)  : UNKNOWN;
+    const s  = includeService ? serviceKey(r.serviceNormalized)        : UNKNOWN;
+    getOrCreate(dk, c, s).ghl++;
+    gTotal++;
+    if (clinicKey(r.clinicLocationNormalized)  === UNKNOWN) gUnkClinic++;
+    if (serviceKey(r.serviceNormalized)         === UNKNOWN) gUnkService++;
+  }
+
+  // ZENOTI
+  let zTotal = 0; let zUnkClinic = 0; let zUnkService = 0;
+  for (const r of zenotiRecs) {
+    const d = r.createdAtSource ?? r.leadCreatedDate ?? r.reportDate;
+    if (!d) continue;
+    const dk = getPeriodKey(d, grouping, tz);
+    const c  = includeClinic  ? clinicKey(r.clinicLocationNormalized)  : UNKNOWN;
+    const s  = includeService ? serviceKey(r.serviceNormalized)        : UNKNOWN;
+    getOrCreate(dk, c, s).zenoti++;
+    zTotal++;
+    if (clinicKey(r.clinicLocationNormalized)  === UNKNOWN) zUnkClinic++;
+    if (serviceKey(r.serviceNormalized)         === UNKNOWN) zUnkService++;
+  }
+
+  // ── Build result rows ──────────────────────────────────────────────────────
+  const rows: SourceComparisonRow[] = Array.from(map.values()).map((e) => {
+    const src    = e.web + e.meta;
+    const clinic  = includeClinic  ? e.clinic  : undefined;
+    const service = includeService ? e.service : undefined;
+    const status  = computeAuditStatus(e.web, e.meta, e.ghl, e.zenoti, clinic, service);
+    const discrepancyLocation = computeDiscrepancyLocation(src, e.ghl, e.zenoti, status);
+    return {
+      period:               periodLabel(e.dateKey, grouping),
+      periodStart:          e.dateKey,
+      periodEnd:            e.dateKey,
+      clinic,
+      service,
+      websiteLeads:         e.web,
+      metaLeads:            e.meta,
+      totalSourceLeads:     src,
+      ghlLeads:             e.ghl,
+      zenotiLeads:          e.zenoti,
+      srcToGhlDiff:         src - e.ghl,
+      ghlToZenotiDiff:      e.ghl - e.zenoti,
+      srcToGhlMatchRate:    pct(e.ghl, src),
+      ghlToZenotiMatchRate: pct(e.zenoti, e.ghl),
+      discrepancyLocation,
+      status,
+    };
+  }).sort((a, b) => {
+    // Sort by date desc, then clinic, then service
+    const dateCmp = b.periodStart.localeCompare(a.periodStart);
+    if (dateCmp !== 0) return dateCmp;
+    const clinicCmp = (a.clinic ?? "").localeCompare(b.clinic ?? "");
+    if (clinicCmp !== 0) return clinicCmp;
+    return (a.service ?? "").localeCompare(b.service ?? "");
+  });
+
+  const diagnostics: SourceComparisonDiagnostics = {
+    websiteTotal: wTotal,
+    metaTotal: mTotal,
+    ghlTotal: gTotal,
+    zenotiTotal: zTotal,
+    websiteUnknownClinic: wUnkClinic,
+    websiteUnknownService: wUnkService,
+    metaUnknownClinic: mUnkClinic,
+    metaUnknownService: mUnkService,
+    ghlUnknownClinic: gUnkClinic,
+    ghlUnknownService: gUnkService,
+    zenotiUnknownClinic: zUnkClinic,
+    zenotiUnknownService: zUnkService,
+    groupCount: rows.length,
+    dateRange: `${from ?? "all"} → ${to ?? "all"}`,
+    dimensionGroupBy,
+    serviceFilter: serviceFilter ?? "all",
+    clinicFilter:  clinicFilter  ?? "all",
+  };
+
+  return { rows, diagnostics };
 }
 
 // ─── Clinic Breakdown ─────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { inferClinicFromGhlRecord, inferServiceFromGhlRecord } from "@/lib/normalization";
+import { inferClinicFromGhlRecord, inferServiceFromGhlRecord, loadMappingCaches } from "@/lib/normalization";
 
 const GHL_SEARCH_ENDPOINT = "https://services.leadconnectorhq.com/opportunities/search";
 const TIMEOUT_MS          = 45_000;
@@ -514,6 +514,10 @@ export async function POST(req: NextRequest) {
       dateRangeEnd:   toDate,
     },
   });
+
+  // Load manual mapping caches so inferClinicFromGhlRecord / inferServiceFromGhlRecord
+  // can apply DB-configured overrides during this sync run.
+  try { await loadMappingCaches(); } catch { /* non-fatal — keyword fallback still works */ }
 
   try {
     const fetched = await fetchAllPages({

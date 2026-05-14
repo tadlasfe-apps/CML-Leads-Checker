@@ -6,10 +6,14 @@ import prisma from "@/lib/prisma";
 import {
   inferClinicFromGhlRecord,
   inferServiceFromGhlRecord,
+  loadMappingCaches,
 } from "@/lib/normalization";
 
 export async function POST() {
   try {
+    // Load manual mapping caches first so DB-configured overrides are applied
+    await loadMappingCaches();
+
     // Fetch all GHL records — we re-infer from rawPayload regardless of existing values
     // so that any previous incorrect/missing mapping is corrected.
     const recs = await prisma.leadSourceRecord.findMany({

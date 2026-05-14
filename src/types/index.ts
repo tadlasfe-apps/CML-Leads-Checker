@@ -21,6 +21,21 @@ export type DiscrepancyLocation =
 
 export type DateGrouping = "daily" | "weekly" | "monthly" | "quarterly";
 
+// Dimension grouping for Source Comparison — determines which dimensions appear as columns
+export type ComparisonDimension = "date" | "date+clinic" | "date+service" | "date+clinic+service";
+export const COMPARISON_DIMENSIONS: ComparisonDimension[] = [
+  "date",
+  "date+clinic",
+  "date+service",
+  "date+clinic+service",
+];
+export const COMPARISON_DIMENSION_LABELS: Record<ComparisonDimension, string> = {
+  "date":                "Date only",
+  "date+clinic":         "Date + Clinic",
+  "date+service":        "Date + Service",
+  "date+clinic+service": "Date + Clinic + Service",
+};
+
 export type ReportingTimezone =
   | "America/Toronto"
   | "America/Vancouver"
@@ -86,6 +101,9 @@ export interface SourceComparisonRow {
   period: string;         // date or week/month label
   periodStart: string;    // iso date
   periodEnd: string;
+  // Optional dimension fields — populated when ComparisonDimension includes clinic/service
+  clinic?: string;
+  service?: string;
   websiteLeads: number;
   metaLeads: number;
   totalSourceLeads: number;
@@ -97,6 +115,26 @@ export interface SourceComparisonRow {
   ghlToZenotiMatchRate: number | null;
   discrepancyLocation: DiscrepancyLocation;
   status: AuditStatus;
+}
+
+export interface SourceComparisonDiagnostics {
+  websiteTotal: number;
+  metaTotal: number;
+  ghlTotal: number;
+  zenotiTotal: number;
+  websiteUnknownClinic: number;
+  websiteUnknownService: number;
+  metaUnknownClinic: number;
+  metaUnknownService: number;
+  ghlUnknownClinic: number;
+  ghlUnknownService: number;
+  zenotiUnknownClinic: number;
+  zenotiUnknownService: number;
+  groupCount: number;
+  dateRange: string;
+  dimensionGroupBy: string;
+  serviceFilter: string;
+  clinicFilter: string;
 }
 
 export interface DrilldownRow {
@@ -287,6 +325,21 @@ export const WEBSITE_FORM_SOURCES = [
 ] as const;
 
 export const DATE_GROUPINGS: DateGrouping[] = ["daily", "weekly", "monthly", "quarterly"];
+
+// Canonical clinic locations (current website location names)
+export const CANONICAL_CLINICS: string[] = [
+  "Toronto", "Newmarket", "Mississauga", "Vaughan", "Thornhill",
+  "Maple", "Barrie", "Oakville", "Etobicoke", "Whitby",
+  "Midtown", "Scarborough", "Yorkville", "Burlington", "Queen West",
+];
+
+// Canonical service names
+export const CANONICAL_SERVICES: string[] = [
+  "Laser Hair Removal", "Morpheus8", "Botox", "Microneedling",
+  "Salmon DNA", "Microneedling & Salmon DNA", "PRP", "Hair Restoration",
+  "CoolSculpting", "Venus Viva", "Vaginal Rejuvenation", "Intimate Peel",
+  "Express Facial", "Consultation",
+];
 
 export const REPORTING_TIMEZONES: ReportingTimezone[] = [
   "America/Toronto",
