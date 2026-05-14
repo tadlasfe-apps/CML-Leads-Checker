@@ -523,7 +523,206 @@ export function isUnmappedClinic(value: string): boolean {
 }
 
 export function isUnmappedService(value: string): boolean {
-  return value === "Other" || value === "";
+  return value === "Other" || value === "Unknown" || value === "";
+}
+
+// ─── GHL Inference ────────────────────────────────────────────────────────────
+
+// Custom field name keywords that likely hold a clinic/location value
+const GHL_CLINIC_FIELD_NAMES: string[] = [
+  "clinic", "location", "preferred location", "centre", "center",
+  "branch", "store", "cml location", "selected location", "preferred clinic",
+];
+
+// Custom field name keywords that likely hold a service/treatment value
+const GHL_SERVICE_FIELD_NAMES: string[] = [
+  "service", "treatment", "interested service", "selected service",
+  "procedure", "concern", "offer", "promo", "campaign", "lead service",
+];
+
+function getCfValue(cf: unknown): string {
+  if (!cf || typeof cf !== "object") return "";
+  const o = cf as Record<string, unknown>;
+  return toSafeString(
+    o["fieldValue"] ?? o["value"] ?? o["customFieldValue"] ?? o["customfield_value"] ?? ""
+  ).trim();
+}
+
+function getCfName(cf: unknown): string {
+  if (!cf || typeof cf !== "object") return "";
+  const o = cf as Record<string, unknown>;
+  return normalizeLower(o["name"] ?? o["label"] ?? o["key"] ?? o["fieldKey"] ?? "");
+}
+
+function safeCustomFields(opp: Record<string, unknown>): unknown[] {
+  const contact = (opp["contact"] ?? {}) as Record<string, unknown>;
+  return [
+    ...(Array.isArray(opp["customFields"]) ? (opp["customFields"] as unknown[]) : []),
+    ...(Array.isArray(opp["customField"]) ? (opp["customField"] as unknown[]) : []),
+    ...(Array.isArray(contact["customFields"]) ? (contact["customFields"] as unknown[]) : []),
+    ...(Array.isArray(contact["customField"]) ? (contact["customField"] as unknown[]) : []),
+  ];
+}
+
+/**
+ * Infers clinicLocationRaw and clinicLocationNormalized for a GHL opportunity.
+ *
+ * Priority:
+ * 1. Custom fields whose name contains a clinic-related keyword
+ * 2. contact.locationName / contact.location
+ * 3. Opportunity name/title
+ * 4. Contact tags
+ * 5. Source / campaign / UTM fields
+ * 6. All custom field values (keyword scan regardless of field name)
+ * 7. Fallback → Unknown
+ */
+export function inferClinicFromGhlRecord(opp: unknown): { raw: string | undefined; normalized: string } {
+  const o: Record<string, unknown> = (opp && typeof opp === "object") ? opp as Record<string, unknown> : {};
+  const contact: Record<string, unknown> = (o["contact"] && typeof o["contact"] === "object")
+    ? o["contact"] as Record<string, unknown> : {};
+
+  const customFields = safeCustomFields(o);
+
+  // 1. Custom fields with clinic-related names
+  for (const cf of customFields) {
+    const name  = getCfName(cf);
+    const value = getCfValue(cf);
+    if (!value) continue;
+    if (GHL_CLINIC_FIELD_NAMES.some((n) => name.includes(n))) {
+      const hit = scanForClinic(value);
+      if (hit) return { raw: value, normalized: hit };
+      const hit2 = normalizeClinicLocation(value);
+      if (hit2 !== "Unknown") return { raw: value, normalized: hit2 };
+    }
+  }
+
+  // 2. contact.locationName / contact.location
+  const locationName = toSafeString(contact["locationName"] ?? contact["location"] ?? "").trim();
+  if (locationName) {
+    const hit = scanForClinic(locationName);
+    if (hit) return { raw: locationName, normalized: hit };
+    const hit2 = normalizeClinicLocation(locationName);
+    if (hit2 !== "Unknown") return { raw: locationName, normalized: hit2 };
+  }
+
+  // 3. Opportunity name
+  const oppName = toSafeString(o["name"] ?? "").trim();
+  if (oppName) {
+    const hit = scanForClinic(oppName);
+    if (hit) return { raw: oppName, normalized: hit };
+  }
+
+  // 4. Tags
+  const tags = Array.isArray(contact["tags"]) ? contact["tags"] as unknown[] : [];
+  for (const tag of tags) {
+    const t = toSafeString(tag).trim();
+    if (!t) continue;
+    const hit = scanForClinic(t);
+    if (hit) return { raw: t, normalized: hit };
+  }
+
+  // 5. Source / campaign / UTM fields
+  const scanFields = [
+    toSafeString(contact["source"]),
+    toSafeString(o["source"]),
+    toSafeString(o["campaignName"] ?? o["campaign_name"]),
+    toSafeString(contact["utmCampaign"] ?? contact["utm_campaign"]),
+  ];
+  for (const s of scanFields) {
+    const trimmed = s.trim();
+    if (!trimmed) continue;
+    const hit = scanForClinic(trimmed);
+    if (hit) return { raw: trimmed, normalized: hit };
+  }
+
+  // 6. All custom field values (regardless of field name)
+  for (const cf of customFields) {
+    const value = getCfValue(cf);
+    if (!value) continue;
+    const hit = scanForClinic(value);
+    if (hit) return { raw: value, normalized: hit };
+  }
+
+  return { raw: undefined, normalized: "Unknown" };
+}
+
+/**
+ * Infers serviceRaw and serviceNormalized for a GHL opportunity.
+ *
+ * Priority:
+ * 1. Custom fields whose name contains a service-related keyword
+ * 2. Opportunity name/title
+ * 3. Pipeline stage name
+ * 4. Contact tags
+ * 5. Source / campaign fields
+ * 6. All custom field values (keyword scan)
+ * 7. Fallback → Unknown
+ */
+export function inferServiceFromGhlRecord(opp: unknown): { raw: string | undefined; normalized: string } {
+  const o: Record<string, unknown> = (opp && typeof opp === "object") ? opp as Record<string, unknown> : {};
+  const contact: Record<string, unknown> = (o["contact"] && typeof o["contact"] === "object")
+    ? o["contact"] as Record<string, unknown> : {};
+  const stage: Record<string, unknown> = (o["stage"] && typeof o["stage"] === "object")
+    ? o["stage"] as Record<string, unknown> : {};
+
+  const customFields = safeCustomFields(o);
+
+  // 1. Custom fields with service-related names
+  for (const cf of customFields) {
+    const name  = getCfName(cf);
+    const value = getCfValue(cf);
+    if (!value) continue;
+    if (GHL_SERVICE_FIELD_NAMES.some((n) => name.includes(n))) {
+      const normalized = scanForService(value);
+      if (normalized !== "Other") return { raw: value, normalized };
+    }
+  }
+
+  // 2. Opportunity name
+  const oppName = toSafeString(o["name"] ?? "").trim();
+  if (oppName) {
+    const normalized = scanForService(oppName);
+    if (normalized !== "Other") return { raw: oppName, normalized };
+  }
+
+  // 3. Stage name
+  const stageName = toSafeString(stage["name"] ?? o["pipelineStageName"] ?? "").trim();
+  if (stageName) {
+    const normalized = scanForService(stageName);
+    if (normalized !== "Other") return { raw: stageName, normalized };
+  }
+
+  // 4. Tags
+  const tags = Array.isArray(contact["tags"]) ? contact["tags"] as unknown[] : [];
+  for (const tag of tags) {
+    const t = toSafeString(tag).trim();
+    if (!t) continue;
+    const normalized = scanForService(t);
+    if (normalized !== "Other") return { raw: t, normalized };
+  }
+
+  // 5. Source / campaign fields
+  const scanFields = [
+    toSafeString(contact["source"]),
+    toSafeString(o["source"]),
+    toSafeString(o["campaignName"] ?? o["campaign_name"]),
+  ];
+  for (const s of scanFields) {
+    const trimmed = s.trim();
+    if (!trimmed) continue;
+    const normalized = scanForService(trimmed);
+    if (normalized !== "Other") return { raw: trimmed, normalized };
+  }
+
+  // 6. All custom field values
+  for (const cf of customFields) {
+    const value = getCfValue(cf);
+    if (!value) continue;
+    const normalized = scanForService(value);
+    if (normalized !== "Other") return { raw: value, normalized };
+  }
+
+  return { raw: oppName || undefined, normalized: "Unknown" };
 }
 
 export function safeLocaleCompare(a: unknown, b: unknown): number {

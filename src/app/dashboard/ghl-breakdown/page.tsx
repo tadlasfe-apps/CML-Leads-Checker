@@ -22,8 +22,8 @@ interface CategoryRow {
 }
 
 interface SourceRow  { raw: string; category: string; count: number; }
-interface ClinicRow  { clinic:  string; count: number; }
-interface ServiceRow { service: string; count: number; }
+interface ClinicRow  { clinic:  string; total: number; facebook: number; website: number; other: number; }
+interface ServiceRow { service: string; total: number; facebook: number; website: number; other: number; }
 interface StageRow   { stage:   string; count: number; }
 
 interface BreakdownData {
@@ -103,6 +103,16 @@ export default function GhlBreakdownPage() {
   const [backfillResult,  setBackfillResult]  = useState<{ patched: number; total: number; noSource: number } | null>(null);
   const [backfillError,   setBackfillError]   = useState<string | null>(null);
 
+  // Backfill GHL clinic + service mapping
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapResult,  setMapResult]  = useState<{
+    total: number; clinicPatched: number; servicePatched: number;
+    bothPatched: number; noChange: number;
+    unknownClinic: number; unknownService: number;
+    sample?: any[];
+  } | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -130,6 +140,19 @@ export default function GhlBreakdownPage() {
       else { setBackfillResult(json); fetchData(); }
     } catch (e: any) { setBackfillError(e?.message ?? "Failed"); }
     setBackfillLoading(false);
+  }
+
+  async function runMappingBackfill() {
+    setMapLoading(true);
+    setMapResult(null);
+    setMapError(null);
+    try {
+      const res  = await fetch("/api/debug/backfill-ghl-mapping", { method: "POST" });
+      const json = await res.json();
+      if (json.error) setMapError(json.error);
+      else { setMapResult(json); fetchData(); }
+    } catch (e: any) { setMapError(e?.message ?? "Failed"); }
+    setMapLoading(false);
   }
 
   const unknownPct = data ? Math.round((data.unknownSourceCount / Math.max(data.total, 1)) * 100) : 0;
@@ -199,6 +222,75 @@ export default function GhlBreakdownPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* GHL Mapping Backfill */}
+        <Card className="border-blue-100 bg-blue-50/60">
+          <CardContent className="p-4 flex items-start gap-3">
+            <Database className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-blue-900">Backfill GHL Clinic &amp; Service Mapping</p>
+              <p className="text-xs text-blue-700 mt-0.5">
+                Re-infers <code className="bg-blue-100 px-1 rounded">clinicLocationNormalized</code> and{" "}
+                <code className="bg-blue-100 px-1 rounded">serviceNormalized</code> for all existing GHL records
+                from the saved raw payload, opportunity name, stage, tags, and custom fields.
+                Does not call GHL API. Run after pulling new GHL data.
+              </p>
+              {mapResult && (
+                <div className="mt-2 text-xs text-blue-800 space-y-0.5">
+                  <p>
+                    <strong>{mapResult.total}</strong> records processed —{" "}
+                    <strong>{mapResult.bothPatched + mapResult.clinicPatched + mapResult.servicePatched}</strong> updated
+                    ({mapResult.bothPatched} both, {mapResult.clinicPatched} clinic-only, {mapResult.servicePatched} service-only),{" "}
+                    {mapResult.noChange} unchanged.
+                  </p>
+                  <p className="text-amber-700">
+                    Still unknown: <strong>{mapResult.unknownClinic}</strong> clinic,{" "}
+                    <strong>{mapResult.unknownService}</strong> service (no recognizable keywords in raw payload).
+                  </p>
+                  {mapResult.sample && mapResult.sample.length > 0 && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer font-medium text-blue-700 hover:underline">
+                        Sample ({mapResult.sample.length} records)
+                      </summary>
+                      <div className="mt-1 overflow-x-auto">
+                        <table className="text-xs border rounded overflow-hidden w-full whitespace-nowrap">
+                          <thead>
+                            <tr className="bg-blue-100 text-blue-900">
+                              {["Clinic Raw","Clinic Mapped","Service Raw","Service Mapped","Stage"].map((h) => (
+                                <th key={h} className="px-2 py-1 text-left font-medium">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {mapResult.sample.map((s: any, i: number) => (
+                              <tr key={i}>
+                                <td className="px-2 py-1 text-muted-foreground">{s.clinicLocationRaw ?? "—"}</td>
+                                <td className={`px-2 py-1 font-medium ${s.clinicLocationNormalized === "Unknown" ? "text-amber-600" : "text-blue-700"}`}>{s.clinicLocationNormalized}</td>
+                                <td className="px-2 py-1 text-muted-foreground">{s.serviceRaw ?? "—"}</td>
+                                <td className={`px-2 py-1 font-medium ${s.serviceNormalized === "Unknown" ? "text-amber-600" : "text-blue-700"}`}>{s.serviceNormalized}</td>
+                                <td className="px-2 py-1 text-muted-foreground">{s.ghlStageName ?? "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+              {mapError && <p className="mt-1 text-xs text-red-600">{mapError}</p>}
+            </div>
+            <Button
+              size="sm" variant="outline"
+              onClick={runMappingBackfill} disabled={mapLoading}
+              className="text-xs h-7 border-blue-300 text-blue-700 hover:bg-blue-100 shrink-0"
+            >
+              {mapLoading
+                ? <><Loader2 className="w-3 h-3 animate-spin mr-1" />Backfilling…</>
+                : <><RefreshCw className="w-3 h-3 mr-1" />Backfill GHL Mapping</>}
+            </Button>
+          </CardContent>
+        </Card>
 
         {error && (
           <Card className="border-red-200 bg-red-50">
@@ -342,8 +434,14 @@ export default function GhlBreakdownPage() {
                   <TableHeader>
                     <TableRow className="text-xs">
                       <TableHead>Clinic</TableHead>
-                      <TableHead className="text-right">GHL</TableHead>
-                      <TableHead className="text-right">%</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead className="text-right">
+                        <span className="text-purple-700">FB Ads</span>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <span className="text-blue-700">Website</span>
+                      </TableHead>
+                      <TableHead className="text-right text-muted-foreground">Other</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -352,8 +450,16 @@ export default function GhlBreakdownPage() {
                         <TableCell className={row.clinic === "Unknown" ? "italic text-muted-foreground" : ""}>
                           {row.clinic}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums font-medium">{row.count.toLocaleString()}</TableCell>
-                        <TableCell className="text-right tabular-nums text-muted-foreground text-xs">{pct(row.count, data.total)}</TableCell>
+                        <TableCell className="text-right tabular-nums font-semibold">{row.total.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums text-purple-700">
+                          {row.facebook > 0 ? row.facebook.toLocaleString() : <span className="text-muted-foreground/40">—</span>}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-blue-700">
+                          {row.website > 0 ? row.website.toLocaleString() : <span className="text-muted-foreground/40">—</span>}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {row.other > 0 ? row.other.toLocaleString() : <span className="text-muted-foreground/40">—</span>}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -366,16 +472,32 @@ export default function GhlBreakdownPage() {
                   <TableHeader>
                     <TableRow className="text-xs">
                       <TableHead>Service</TableHead>
-                      <TableHead className="text-right">GHL</TableHead>
-                      <TableHead className="text-right">%</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead className="text-right">
+                        <span className="text-purple-700">FB Ads</span>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <span className="text-blue-700">Website</span>
+                      </TableHead>
+                      <TableHead className="text-right text-muted-foreground">Other</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {data.byService.map((row) => (
                       <TableRow key={row.service} className="text-sm">
-                        <TableCell>{row.service}</TableCell>
-                        <TableCell className="text-right tabular-nums font-medium">{row.count.toLocaleString()}</TableCell>
-                        <TableCell className="text-right tabular-nums text-muted-foreground text-xs">{pct(row.count, data.total)}</TableCell>
+                        <TableCell className={row.service === "Unknown" || row.service === "Other" ? "italic text-muted-foreground" : ""}>
+                          {row.service}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums font-semibold">{row.total.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums text-purple-700">
+                          {row.facebook > 0 ? row.facebook.toLocaleString() : <span className="text-muted-foreground/40">—</span>}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-blue-700">
+                          {row.website > 0 ? row.website.toLocaleString() : <span className="text-muted-foreground/40">—</span>}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {row.other > 0 ? row.other.toLocaleString() : <span className="text-muted-foreground/40">—</span>}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

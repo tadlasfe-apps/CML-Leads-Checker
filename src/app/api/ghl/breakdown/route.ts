@@ -70,11 +70,13 @@ export async function GET(req: NextRequest) {
     const websiteLeads = await prisma.leadSourceRecord.count({ where: webWhere });
 
     // ── Aggregate GHL records ─────────────────────────────────────────────────
-    const sourceMap  = new Map<string, { raw: string; category: SourceCategory; count: number }>();
+    type SourceBreakdown = { total: number; facebook: number; website: number; other: number };
+
+    const sourceMap   = new Map<string, { raw: string; category: SourceCategory; count: number }>();
     const categoryMap = new Map<SourceCategory, number>();
-    const clinicMap  = new Map<string, number>();
-    const serviceMap = new Map<string, number>();
-    const stageMap   = new Map<string, number>();
+    const clinicMap   = new Map<string, SourceBreakdown>();
+    const serviceMap  = new Map<string, SourceBreakdown>();
+    const stageMap    = new Map<string, number>();
 
     let unknownSourceCount = 0;
 
@@ -96,11 +98,23 @@ export async function GET(req: NextRequest) {
 
       categoryMap.set(category, (categoryMap.get(category) ?? 0) + 1);
 
+      // Clinic — track total + per-source breakdown
       const clinic = r.clinicLocationNormalized ?? "Unknown";
-      clinicMap.set(clinic, (clinicMap.get(clinic) ?? 0) + 1);
+      const clinicEntry: SourceBreakdown = clinicMap.get(clinic) ?? { total: 0, facebook: 0, website: 0, other: 0 };
+      clinicEntry.total++;
+      if      (category === "Facebook Ads")   clinicEntry.facebook++;
+      else if (category === "Website Forms")  clinicEntry.website++;
+      else                                    clinicEntry.other++;
+      clinicMap.set(clinic, clinicEntry);
 
+      // Service — track total + per-source breakdown
       const service = r.serviceNormalized ?? "Other";
-      serviceMap.set(service, (serviceMap.get(service) ?? 0) + 1);
+      const serviceEntry: SourceBreakdown = serviceMap.get(service) ?? { total: 0, facebook: 0, website: 0, other: 0 };
+      serviceEntry.total++;
+      if      (category === "Facebook Ads")   serviceEntry.facebook++;
+      else if (category === "Website Forms")  serviceEntry.website++;
+      else                                    serviceEntry.other++;
+      serviceMap.set(service, serviceEntry);
 
       const stage = r.ghlStageName ?? "Unknown Stage";
       stageMap.set(stage, (stageMap.get(stage) ?? 0) + 1);
@@ -143,9 +157,9 @@ export async function GET(req: NextRequest) {
       websiteLeads,
       unknownSourceCount,
       categoryComparison,
-      bySource: Array.from(sourceMap.values()).sort((a, b) => b.count - a.count),
-      byClinic:  Array.from(clinicMap.entries()).map(([clinic,  count]) => ({ clinic,  count })).sort((a, b) => b.count - a.count),
-      byService: Array.from(serviceMap.entries()).map(([service, count]) => ({ service, count })).sort((a, b) => b.count - a.count),
+      bySource:  Array.from(sourceMap.values()).sort((a, b) => b.count - a.count),
+      byClinic:  Array.from(clinicMap.entries()).map(([clinic,  s]) => ({ clinic,  ...s })).sort((a, b) => b.total - a.total),
+      byService: Array.from(serviceMap.entries()).map(([service, s]) => ({ service, ...s })).sort((a, b) => b.total - a.total),
       byStage:   Array.from(stageMap.entries()).map(([stage,   count]) => ({ stage,   count })).sort((a, b) => b.count - a.count),
     });
   } catch (err: any) {

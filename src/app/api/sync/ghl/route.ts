@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { inferClinicFromGhlRecord, inferServiceFromGhlRecord } from "@/lib/normalization";
 
 const GHL_SEARCH_ENDPOINT = "https://services.leadconnectorhq.com/opportunities/search";
 const TIMEOUT_MS          = 45_000;
@@ -587,29 +588,34 @@ export async function POST(req: NextRequest) {
         contact.name ??
         (`${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim() || undefined);
 
+      const clinicInferred  = inferClinicFromGhlRecord(opp);
+      const serviceInferred = inferServiceFromGhlRecord(opp);
+
       return {
-        sourceSystem:      "GHL"             as const,
-        recordType:        "INDIVIDUAL_LEAD" as const,
-        backendProvider:   "GHL",
+        sourceSystem:             "GHL"             as const,
+        recordType:               "INDIVIDUAL_LEAD" as const,
+        backendProvider:          "GHL",
         externalId,
-        createdAtSource:   createdAt,
+        createdAtSource:          createdAt,
         fullName,
-        firstName:         contact.firstName    ?? undefined,
-        lastName:          contact.lastName     ?? undefined,
-        email:             contact.email        ?? undefined,
-        phone:             contact.phone        ?? undefined,
-        clinicLocationRaw: contact.locationName ?? undefined,
-        serviceRaw:        opp.name             ?? undefined,
-        status:            opp.status           ?? undefined,
-        leadSource:        contact.source       ?? opp.source       ?? undefined,
-        attributedChannel: contact.attributionSource?.medium ?? opp.attributionSource?.medium ?? undefined,
-        ghlContactId:      contactId,
-        ghlOpportunityId:  opportunityId,
-        ghlPipelineName:   opp.pipelineName     ?? undefined,
-        ghlPipelineId:     pipelineId,
-        ghlStageName:      opp.stage?.name      ?? undefined,
-        ghlStageId:        opp.stage?.id        ?? undefined,
-        rawPayload:        opp,
+        firstName:                contact.firstName    ?? undefined,
+        lastName:                 contact.lastName     ?? undefined,
+        email:                    contact.email        ?? undefined,
+        phone:                    contact.phone        ?? undefined,
+        clinicLocationRaw:        clinicInferred.raw   ?? contact.locationName ?? undefined,
+        clinicLocationNormalized: clinicInferred.normalized,
+        serviceRaw:               serviceInferred.raw  ?? opp.name ?? undefined,
+        serviceNormalized:        serviceInferred.normalized,
+        status:                   opp.status           ?? undefined,
+        leadSource:               contact.source       ?? opp.source       ?? undefined,
+        attributedChannel:        contact.attributionSource?.medium ?? opp.attributionSource?.medium ?? undefined,
+        ghlContactId:             contactId,
+        ghlOpportunityId:         opportunityId,
+        ghlPipelineName:          opp.pipelineName     ?? undefined,
+        ghlPipelineId:            pipelineId,
+        ghlStageName:             opp.stage?.name      ?? undefined,
+        ghlStageId:               opp.stage?.id        ?? undefined,
+        rawPayload:               opp,
       };
     });
 

@@ -2,7 +2,7 @@ import Papa from "papaparse";
 import {
   normalizeEmail, normalizePhone, normalizeClinicLocation, normalizeService,
   normalizeWebsiteFormSource, inferWebsiteFormSource, normalizeMetaResultType,
-  isUnmappedClinic, isUnmappedService,
+  isUnmappedClinic, isUnmappedService, toSafeString, META_CAMPAIGN_CLINIC_KEYWORDS,
 } from "./normalization";
 
 export type ParsedSourceSystem = "WEBSITE" | "META" | "GHL" | "ZENOTI";
@@ -290,60 +290,103 @@ function parseMetaRow(row: Record<string, string>): ParsedRecord {
 
 // ─── GHL ──────────────────────────────────────────────────────────────────────
 
+/** Scan a string for a clinic keyword, returning the canonical name or null. */
+function scanCsvForClinic(text: string): string | null {
+  if (!text) return null;
+  const lower = toSafeString(text).toLowerCase();
+  for (const [kw, normalized] of META_CAMPAIGN_CLINIC_KEYWORDS) {
+    if (lower.includes(kw)) return normalized;
+  }
+  return null;
+}
+
+/** Scan a string for a service keyword, returning the canonical name or null. */
+function scanCsvForService(text: string): string | null {
+  if (!text) return null;
+  const normalized = normalizeService(text);
+  return normalized !== "Other" ? normalized : null;
+}
+
 function parseGhlRow(row: Record<string, string>): ParsedRecord {
-  const dateVal = h(row, "contact created date", "created", "date created",
-    "created at", "opportunity created date", "opportunity updated date");
+  const dateVal = h(row,
+    "contact created date", "created", "date created", "created at",
+    "opportunity created date", "opportunity updated date", "date");
   const createdAtSource = parseDate(dateVal);
 
-  const contactId = h(row, "contact id", "contactid");
-  const opportunityId = h(row, "opportunity id", "opportunityid");
-  const firstName = h(row, "first name", "firstname");
-  const lastName = h(row, "last name", "lastname");
-  const fullName = h(row, "full name", "name", "fullname") ||
+  const contactId    = h(row, "contact id", "contactid");
+  const opportunityId = h(row, "opportunity id", "opportunityid", "id");
+  const firstName    = h(row, "first name", "firstname");
+  const lastName     = h(row, "last name", "lastname");
+  const fullName     = h(row, "full name", "name", "fullname", "contact name") ||
     `${firstName} ${lastName}`.trim();
-  const email = h(row, "email");
-  const phone = h(row, "phone", "phone number");
-  const clinicRaw = h(row, "location", "clinic", "clinic location", "center");
-  const serviceRaw = h(row, "service", "treatment");
-  const pipeline = h(row, "pipeline", "pipeline name");
-  const pipelineId = h(row, "pipeline id", "pipelineid");
-  const stage = h(row, "stage", "stage name", "pipeline stage");
-  const stageId = h(row, "stage id", "stageid");
-  const source = h(row, "source", "lead source");
-  const campaign = h(row, "campaign", "campaign name");
+  const email        = h(row, "email", "email address");
+  const phone        = h(row, "phone", "phone number", "mobile");
 
-  const clinicNorm = normalizeClinicLocation(clinicRaw || undefined);
-  const serviceNorm = normalizeService(serviceRaw || undefined);
+  // Clinic — try explicit columns first, then infer from opportunity name / source
+  const clinicRaw = h(row,
+    "clinic location", "clinic", "location", "preferred location",
+    "centre", "center", "branch", "store", "cml location",
+    "selected location", "preferred clinic");
+
+  // Service — try explicit columns first
+  const serviceRaw = h(row,
+    "service", "treatment", "interested service", "selected service",
+    "procedure", "concern", "offer", "promo", "lead service");
+
+  const pipeline   = h(row, "pipeline", "pipeline name");
+  const pipelineId = h(row, "pipeline id", "pipelineid");
+  const stage      = h(row, "stage", "stage name", "pipeline stage", "opportunity stage");
+  const source     = h(row, "source", "lead source");
+  const campaign   = h(row, "campaign", "campaign name", "opportunity name", "name");
+
+  // Normalize clinic — fallback: scan opportunity name, stage name, campaign
+  let clinicNorm = normalizeClinicLocation(clinicRaw || undefined);
+  if (clinicNorm === "Unknown") {
+    for (const candidate of [campaign, stage, source]) {
+      const hit = scanCsvForClinic(candidate);
+      if (hit) { clinicNorm = hit; break; }
+    }
+  }
+
+  // Normalize service — fallback: scan opportunity name, stage, campaign
+  let serviceNorm = normalizeService(serviceRaw || undefined);
+  if (serviceNorm === "Other") {
+    for (const candidate of [campaign, stage, source]) {
+      const hit = scanCsvForService(candidate);
+      if (hit) { serviceNorm = hit; break; }
+    }
+  }
+  if (serviceNorm === "Other") serviceNorm = "Unknown";
 
   return {
-    sourceSystem: "GHL",
-    recordType: "INDIVIDUAL_LEAD",
-    backendProvider: "GHL",
-    externalId: opportunityId || contactId || undefined,
+    sourceSystem:             "GHL",
+    recordType:               "INDIVIDUAL_LEAD",
+    backendProvider:          "GHL",
+    externalId:               opportunityId || contactId || undefined,
     createdAtSource,
-    firstName: firstName || undefined,
-    lastName: lastName || undefined,
-    fullName: fullName || undefined,
-    email: email || undefined,
-    phone: phone || undefined,
-    normalizedEmail: normalizeEmail(email),
-    normalizedPhone: normalizePhone(phone),
-    clinicLocationRaw: clinicRaw || undefined,
+    firstName:                firstName   || undefined,
+    lastName:                 lastName    || undefined,
+    fullName:                 fullName    || undefined,
+    email:                    email       || undefined,
+    phone:                    phone       || undefined,
+    normalizedEmail:          normalizeEmail(email),
+    normalizedPhone:          normalizePhone(phone),
+    clinicLocationRaw:        clinicRaw   || undefined,
     clinicLocationNormalized: clinicNorm,
-    serviceRaw: serviceRaw || undefined,
-    serviceNormalized: serviceNorm,
-    ghlContactId: contactId || undefined,
-    ghlOpportunityId: opportunityId || undefined,
-    ghlPipelineName: pipeline || undefined,
-    ghlPipelineId: pipelineId || undefined,
-    ghlStageName: stage || undefined,
-    campaignName: campaign || undefined,
-    leadSource: source || undefined,
-    status: stage || undefined,
-    rawPayload: row,
-    _unmappedClinic: isUnmappedClinic(clinicNorm),
-    _unmappedService: isUnmappedService(serviceNorm),
-    _dateInvalid: !createdAtSource,
+    serviceRaw:               serviceRaw  || undefined,
+    serviceNormalized:        serviceNorm,
+    ghlContactId:             contactId   || undefined,
+    ghlOpportunityId:         opportunityId || undefined,
+    ghlPipelineName:          pipeline    || undefined,
+    ghlPipelineId:            pipelineId  || undefined,
+    ghlStageName:             stage       || undefined,
+    campaignName:             campaign    || undefined,
+    leadSource:               source      || undefined,
+    status:                   stage       || undefined,
+    rawPayload:               row,
+    _unmappedClinic:          isUnmappedClinic(clinicNorm),
+    _unmappedService:         isUnmappedService(serviceNorm),
+    _dateInvalid:             !createdAtSource,
   };
 }
 
